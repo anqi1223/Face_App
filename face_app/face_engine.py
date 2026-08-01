@@ -1,5 +1,6 @@
 """人脸识别引擎 - InsightFace 封装：初始化、录入、匹配、识别"""
 import hashlib
+import os
 import pickle
 import re
 
@@ -19,13 +20,17 @@ from .visualize import draw_face_annotations
 # InsightFace 模型名（缓存校验依赖：更换模型后自动重新录入）
 MODEL_NAME = "buffalo_l"
 
+# 模型根目录：优先读环境变量 INSIGHTFACE_HOME（离线打包版用 runtime/insightface_home），
+# 未设置时回退到默认 ~/.insightface（与旧行为一致）
+MODEL_ROOT = os.environ.get("INSIGHTFACE_HOME") or "~/.insightface"
+
 
 def init_face_app(providers=None):
     """初始化 InsightFace 人脸分析模型。providers 默认 CPU。"""
     if providers is None:
         providers = ["CPUExecutionProvider"]
     print(f"正在加载 InsightFace 模型... (providers: {providers})")
-    app = FaceAnalysis(name=MODEL_NAME, providers=providers)
+    app = FaceAnalysis(name=MODEL_NAME, providers=providers, root=MODEL_ROOT)
     app.prepare(ctx_id=0, det_size=(640, 640))
     print(f"模型加载完成！检测阈值: {app.det_thresh}")
     return app

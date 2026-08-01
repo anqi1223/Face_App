@@ -848,6 +848,14 @@ def get_table5():
     else:
         print("✅ 检验正常 - 无需人工复核")
 
+    # 7. 返回汇总信息（供 web 层判断是否弹窗确认，main.py 忽略返回值）
+    return {
+        "normal": normal_count,
+        "abnormal": abnormal_count,
+        "error_doc": TABLE5_ERROR_FILE if abnormal_rows else None,
+        "table_file": TABLE5_FILE,
+    }
+
 
 def _generate_error_doc1(
     rows, abnormal_rows, df1, df4, normal_count, abnormal_count, count_match
@@ -1288,6 +1296,14 @@ def get_table6():
         print(f"⚠️ 有 {abnormal_count} 处异常，请核对: {TABLE6_ERROR_FILE}")
     else:
         print("✅ 检验正常 - 无需人工复核")
+
+    # 7. 返回汇总信息（供 web 层判断是否弹窗确认，main.py 忽略返回值）
+    return {
+        "normal": normal_count,
+        "abnormal": abnormal_count,
+        "error_doc": TABLE6_ERROR_FILE if abnormal_details else None,
+        "table_file": TABLE6_FILE,
+    }
 
 
 def _generate_error_doc2(df2, df5, normal_count, abnormal_count, abnormal_details):

@@ -6,10 +6,63 @@
 
 ---
 
+## 使用说明（快速上手）
+
+### 1. 启动系统
+
+双击 **`启动网页.bat`** → 自动启动服务并打开浏览器（`http://localhost:5000`）。
+
+> 工程自带 `runtime/`（embeddable Python 3.12 + 全部依赖 + 人脸模型，约 1GB），**无需安装 Python**，整个工程文件夹复制到任意 Windows 电脑即可运行。
+
+### 2. 网页操作流程（4 步向导）
+
+1. **人脸识别**：拖拽上传 Ref_Figure 人脸库 / Target_Figure 出工照片 → 点「开始人脸识别」→ 生成 `output/00_程序人脸识别结果.xlsx`（后台线程运行，页面实时刷新日志）
+2. **上传输入表**：上传 5 个输入表（照片台账表 / 工作安排表 / 人员分类表 / 项目信息表 / 考勤模板），全部就绪后进入下一步
+3. **生成表格**：一键依次生成表1~表10；生成 **05/06** 时弹窗人工确认（显示正常/异常人数，可下载核对信息错误文档、下载 05/06 表、**回传修正表**覆盖 output 同名文件后继续）
+4. **完成下载**：全部完成后下载 08/09/10 单表，或「下载全部（ZIP）」打包三个表
+
+### 3. 终止服务
+
+| 方式 | 操作 |
+| ---- | ---- |
+| ① 关闭窗口 | 关闭启动时出现的**黑色命令行窗口**（标题：`Face Recognition Server - Close this window to STOP`），点右上角 ✕ 即可 |
+| ② 一键停止 | 双击 **`停止服务.bat`**，自动杀掉占用端口 5000 的服务 |
+
+> **注意**：关浏览器标签 ≠ 停服务，服务一直活在黑窗口里。验证是否已停：浏览器访问 `http://localhost:5000`，打不开（拒绝连接）即已停止。
+
+### 4. 常见问题
+
+- **`DLL load failed`**（目标电脑）→ 安装一次 [VC++ 2015-2022 运行库](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+- **端口 5000 被占用 / 启动失败** → 先双击 `停止服务.bat`，再重新启动
+- **模型与后端**：便携版自动把模型指到 `runtime/insightface_home`（环境变量 `INSIGHTFACE_HOME`），推理后端自动检测 CUDA → DirectML → CPU，无 GPU 机器也能跑
+
+### 5. 开发环境启动（不用便携版时）
+
+> 需用 **AI_PY312** 环境（已装 insightface/cv2）。若未装 Flask：`C:/Users/29037/.conda/envs/AI_PY312/python.exe -m pip install flask`
+
+```bash
+# Web 界面
+C:/Users/29037/.conda/envs/AI_PY312/python.exe web_show/web_app.py
+
+# 命令行（人脸识别 + 生成表1~表10）
+C:/Users/29037/.conda/envs/AI_PY312/python.exe main/main.py
+```
+
+---
+
 ## 目录结构
 
 ```
 人脸识别/
+├── 启动网页.bat                 # 一键启动 Web 界面（推荐入口，双击即可）
+├── 停止服务.bat                 # 一键停止服务（杀端口 5000）
+├── README.md                    # 本文档
+├── .gitignore                   # Git 忽略规则（忽略 output/、runtime/ 等）
+│
+├── main/                        # 命令行入口源码
+│   ├── main.py                  #   人脸识别命令行入口（含表1~表10 生成）
+│   └── requirements.txt         #   依赖清单
+│
 ├── face_app/                    # 核心逻辑包（延迟加载，只在实际用到时才导入重依赖）
 │   ├── __init__.py              #   包入口：延迟加载（PEP 562），导出全部公开函数
 │   ├── face_engine.py           #   InsightFace 封装：初始化、录入、匹配、识别、Excel 输出
@@ -18,28 +71,81 @@
 │   ├── utils.py                 #   Unicode 路径读写（解决 Windows 中文路径问题）
 │   └── visualize.py             #   绘制人脸框、关键点、标注文字
 │
-├── Ref_Figure/                  # 员工参考人脸照片库（一张照片一个人，文件名即姓名）
+├── web_show/                    # Web 交互界面（后端 + 前端全部集中于此）
+│   ├── web_app.py               #   Flask 后端（启动入口，含全部 API 路由）
+│   ├── index.html               #   苹果风格分步向导页面（4 步）
+│   ├── style.css                #   白蓝主题样式
+│   ├── app.js                   #   前端编排逻辑（上传/识别/生成/弹窗确认/下载）
+│   └── logo.png                 #   顶部 logo / 浏览器图标
+│
+├── runtime/                     # 便携运行时（embeddable Python 3.12 + 依赖 + 模型，约1GB，不入git）
+│
+├── Ref_Figure/                  # 员工参考人脸照片库（一张照片一个人，文件名即姓名）+ 向量缓存
 ├── Target_Figure/               # 当日待识别出工照片（文件名含拍摄人+时间+开(收)工汇报）
-├── input/                       # 输入表目录：001/002、照片台账、工作安排、表5/表6、考勤模板
-├── output/                      # 输出目录：00_程序人脸识别结果、人脸库缓存、01_~06_、表7~表10、核对信息错误文档
-├── Output/                      # 旧输出目录（仅历史遗留，可删除）
-│
-├── static/                      # Web 前端静态资源
-│   ├── css/style.css            #   页面样式
-│   └── js/app.js                #   前端交互逻辑
-├── templates/                   # Web 页面模板
-│   └── index.html               #   4 个步骤的操作界面
-│
-├── main.py                      # 人脸识别命令行入口（已含表1~表10 全部生成）
-├── web_app.py                   # Flask Web 交互界面（流程编排入口）
-├── test.py                      # 环境自检：检查 onnxruntime / GPU Provider
-├── requirements.txt             # 依赖清单
-│
-├── input/                        # 输入表（均在 input/ 目录，详见下方"输入表"）
-└── output/                       # 生成结果（均在 output/ 目录，详见"中间结果/最终成果"）
+├── input/                       # 输入表目录：01_照片台账、02_工作安排、03_人员分类、04_项目信息、05_考勤模板
+└── output/                      # 输出目录：00_程序人脸识别结果、01_~06_、表7~表10、核对信息错误文档
 ```
 
 > `.idea/`、`.vscode/` 为编辑器配置文件，与业务无关，可忽略。
+
+---
+
+## 便携运行时 runtime/（已内置，无需安装）
+
+工程自带便携运行时，把 **Python 解释器 + 全部依赖 + 人脸模型** 都装进了 `runtime/`，所以任意 Windows 电脑**无需安装 Python**，整个文件夹复制即用。
+
+```
+runtime/
+├── python/                     # embeddable Python 3.12.10 + 已装好的全部依赖
+│   ├── python.exe              #   Python 解释器（免安装）
+│   ├── msvcp140.dll 等         #   VC++ 运行库 DLL（已内置，避免 DLL load failed）
+│   └── Lib/site-packages/      #   全部依赖包
+├── insightface_home/
+│   └── models/buffalo_l/       #   人脸识别模型（约 326MB，离线使用）
+└── requirements-lock.txt       #   依赖锁定文件（重建运行时用）
+```
+
+### 1. runtime/python/ 内已安装的关键依赖
+
+| 依赖 | 版本 | 用途 |
+| ---- | ---- | ---- |
+| `insightface` | 1.0.1 | 人脸识别引擎（核心） |
+| `onnxruntime` | 1.28.0 | 模型推理后端（CPU，自动检测 CUDA→DirectML→CPU） |
+| `onnx` | 1.22.0 | ONNX 模型格式支持 |
+| `opencv-python` | 5.0.0.93 | 图像处理（cv2） |
+| `numpy` | 2.5.1 | 数值计算 |
+| `pandas` | 3.0.5 | 表格处理 |
+| `openpyxl` | 3.1.5 | Excel 读写 |
+| `flask` | 3.1.3 | Web 界面服务 |
+| `pillow` | 12.2.0 | 图像库 |
+| `scipy` / `scikit-learn` | 1.18.0 / 1.9.0 | insightface 依赖 |
+| `rapidocr-onnxruntime` | 1.4.4 | 可选：OCR 文字提取 |
+
+> 其余为上述依赖的传递依赖（requests、tqdm、six、scikit-image 等），已一并安装。
+
+### 2. 已内置的 VC++ 运行库 DLL
+
+`runtime/python/` 内已放入 `msvcp140.dll`、`concrt140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`，目标电脑**不需要**单独安装 VC++ 运行库。极少数精简系统若仍报 `DLL load failed`，安装一次 [VC++ 2015-2022 运行库](https://aka.ms/vs/17/release/vc_redist.x64.exe) 即可。
+
+### 3. 人脸模型 runtime/insightface_home/models/buffalo_l/
+
+| 文件 | 用途 |
+| ---- | ---- |
+| `w600k_r50.onnx` | 人脸特征提取（识别比对） |
+| `det_10g.onnx` | 人脸检测 |
+| `1k3d68.onnx` | 3D 关键点 |
+| `2d106det.onnx` | 106 点关键点检测 |
+| `genderage.onnx` | 性别 / 年龄 |
+
+> 模型目录通过环境变量 `INSIGHTFACE_HOME` 自动指向 `runtime/insightface_home`（启动 BAT 已设置）。
+
+### 4. 什么时候需要"重装"依赖？
+
+正常情况下**什么都不用装**。仅当 `runtime/python/` 损坏、或要在其他环境重建时，才执行：
+
+```bash
+runtime\python\python.exe -m pip install -r runtime\requirements-lock.txt
+```
 
 ---
 
@@ -47,7 +153,7 @@
 
 ```
 Ref_Figure/ 人脸库  +  Target_Figure/ 当日照片
-   │  main.py  人脸识别 (InsightFace)
+   │  main/main.py  人脸识别 (InsightFace)
    ▼
 00_程序人脸识别结果.xlsx
    │
@@ -84,16 +190,15 @@ Ref_Figure/ 人脸库  +  Target_Figure/ 当日照片
 
 | 文件           | 职责                                                                                                                                                                                                                                                         |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `main.py`    | 命令行入口：加载模型 → 录入 Ref_Figure 人脸库 → 识别 Target_Figure → 输出`00_程序人脸识别结果.xlsx`，并依次生成表1~表10（均写入 output/）。人脸库向量带缓存（`output/face_db_cache.pkl`）：Ref_Figure 图片未增删改时自动复用缓存，跳过向量计算 |
-| `web_app.py` | Flask Web 服务（`python web_app.py` 后浏览器打开 `http://localhost:5000`）。把整个流程分成 4 个步骤，每个步骤可上传表格、逐个或一键执行脚本，并展示已生成文件、可下载                                                                                    |
-| `test.py`    | 环境自检：检查 onnxruntime 是否装好、有没有 GPU Provider（CUDA/DirectML）                                                                                                                                                                                    |
+| `main/main.py`    | 命令行入口：加载模型 → 录入 Ref_Figure 人脸库 → 识别 Target_Figure → 输出`00_程序人脸识别结果.xlsx`，并依次生成表1~表10（均写入 output/）。人脸库向量带缓存（`Ref_Figure/face_db_cache.pkl`，随人脸库存放）：Ref_Figure 图片未增删改时自动复用缓存，跳过向量计算 |
+| `web_show/web_app.py` | Flask Web 交互界面（`AI_PY312` 环境启动，浏览器打开 `http://localhost:5000`）。苹果风格白蓝主题分步向导：①上传照片→人脸识别 ②上传输入表 ③生成表格（05/06 弹窗人工确认，可回传修正表）④完成下载（08/09/10 单表 + ZIP）。识别在后台线程运行、前端实时轮询日志 |
 
 ### 3. 表生成脚本（generate_*）
 
 | 文件 | 输入 → 输出 | 说明 |
 | ---- | ------------ | ---- |
 
-> 表1~表10 的生成逻辑全部在 [face_app/generate_table.py](face_app/generate_table.py)，函数为 `get_table1` ~ `get_table8_9_10`，由 [main.py](main.py) 的 `main()` 依次调用（也可在代码里直接 `from face_app import get_tableN` 调用）。
+> 表1~表10 的生成逻辑全部在 [face_app/generate_table.py](face_app/generate_table.py)，函数为 `get_table1` ~ `get_table8_9_10`，由 [main/main.py](main/main.py) 的 `main()` 依次调用（也可在代码里直接 `from face_app import get_tableN` 调用）。
 
 | 函数（入口脚本） | 输入 → 输出 | 说明 |
 | ---------------- | ------------ | ---- |
@@ -113,13 +218,14 @@ Ref_Figure/ 人脸库  +  Target_Figure/ 当日照片
 
 > 异常检验1/2 均已合并为 `get_table5` / `get_table6`（见上表），已无独立异常检验脚本。
 
-### 5. 前端页面
+### 5. Web 界面（web_show/）
 
-| 文件                     | 职责                                                                       |
-| ------------------------ | -------------------------------------------------------------------------- |
-| `templates/index.html` | 4 个步骤的操作界面：上传表格、执行按钮、日志弹窗、输出文件列表             |
-| `static/js/app.js`     | 前端逻辑：上传文件、调用`/run/<script_key>` 执行脚本、刷新状态、展示日志 |
-| `static/css/style.css` | 页面样式                                                                   |
+| 文件                     | 职责                                                                                          |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
+| `web_show/web_app.py`  | Flask 后端：上传、识别（后台线程 + 进度轮询）、表格生成、确认/回传、下载、ZIP 打包             |
+| `web_show/index.html`  | 苹果风格分步向导页面（4 步 + 确认弹窗 + 完成下载区）                                           |
+| `web_show/app.js`      | 前端逻辑：拖拽上传、逐表生成编排、05/06 确认弹窗、回传修正表、轮询识别日志                    |
+| `web_show/style.css`   | 白蓝苹果主题（变量令牌、胶囊按钮、模糊弹窗、卡片阴影）                                          |
 
 ---
 
@@ -163,39 +269,9 @@ pip install -r requirements.txt
 - `onnxruntime`：InsightFace 推理后端
 - `opencv-python`、`pillow`、`numpy`：图像处理
 
-> **GPU 加速（可选）**：先运行 `python test.py` 确认 CUDA / DirectML 环境可用，再将 `main.py` 中的 `PROVIDERS` 改为 `["CUDAExecutionProvider", "CPUExecutionProvider"]`。
+> **GPU 加速（可选）**：确认环境支持 CUDA / DirectML 后，可将 `main/main.py` 中的 `PROVIDERS` 手动改为 `["CUDAExecutionProvider", "CPUExecutionProvider"]`（默认自动检测）。
 >
-> **OCR 功能（可选）**：如需提取照片文字，先 `pip install rapidocr_onnxruntime`，再将 `main.py` 中的 `OCR_ENABLED` 改为 `True`。
-
----
-
-## 使用方法
-
-### 方式一：Web 界面（推荐）
-
-```bash
-python web_app.py
-```
-
-浏览器打开 `http://localhost:5000`，按页面上的 **4 个步骤** 依次操作：
-
-1. **基础信息处理**：上传 001/002/工作安排/照片台账表 → 人脸识别 → 生成表1~表5
-2. **生成表6/异常检验2**：无上传，直接生成 06_全体人员出工情况表 + 核对信息错误文档2
-3. **生成表7**：无上传，直接生成表7
-4. **生成表8/9/10**：上传考勤模板 → 生成最终考勤表
-
-### 方式二：命令行
-
-```bash
-# 0. 环境自检（可选）
-python test.py
-
-# 1. 人脸识别 + 表1~表10 全部生成
-#    需要：Ref_Figure 人脸库 + Target_Figure 待识别照片 + input/ 下输入表
-python main.py
-
-# 2. 根据 output/核对信息错误文档1/2 人工核对修正后，重新跑 main.py
-```
+> **OCR 功能（可选）**：如需提取照片文字，先 `pip install rapidocr_onnxruntime`，再将 `main/main.py` 中的 `OCR_ENABLED` 改为 `True`。
 
 ---
 

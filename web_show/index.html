@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>人脸识别考勤系统</title>
+  <link rel="icon" href="/logo.png" type="image/png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- 顶部栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo-block">
+        <img src="/logo.png" alt="logo" class="brand-logo">
+        <span class="brand-company">固源电力</span>
+      </div>
+      <div class="brand-text">
+        <h1>人脸识别考勤系统</h1>
+        <p>Face Recognition Attendance</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button class="btn danger" id="btn-clear" title="清空 output/ 和 Target_Figure/ 的所有内容">🗑️ 清空文件夹</button>
+    </div>
+  </header>
+
+  <!-- 步骤条 -->
+  <nav class="stepper" id="stepper">
+    <div class="step active" data-step="1">
+      <div class="step-dot">1</div>
+      <span class="step-label">人脸识别</span>
+    </div>
+    <div class="step-line" data-line="1"></div>
+    <div class="step" data-step="2">
+      <div class="step-dot">2</div>
+      <span class="step-label">上传输入表</span>
+    </div>
+    <div class="step-line" data-line="2"></div>
+    <div class="step" data-step="3">
+      <div class="step-dot">3</div>
+      <span class="step-label">生成表格</span>
+    </div>
+    <div class="step-line" data-line="3"></div>
+    <div class="step" data-step="4">
+      <div class="step-dot">4</div>
+      <span class="step-label">完成下载</span>
+    </div>
+  </nav>
+
+  <main class="container">
+
+    <!-- ════════ 第 1 步：人脸识别 ════════ -->
+    <section class="step-card" id="step-1">
+      <div class="card-title">
+        <h2>① 上传照片并人脸识别</h2>
+        <p class="subtitle">确保 Ref_Figure（员工人脸库）与 Target_Figure（当日出工照片）中有图片</p>
+      </div>
+
+      <div class="upload-grid">
+        <div class="dropzone" id="dz-ref">
+          <input type="file" accept="image/*" multiple hidden id="file-ref">
+          <div class="dz-icon">📸</div>
+          <div class="dz-title">Ref_Figure 员工人脸库</div>
+          <div class="dz-hint">点击选择或拖拽图片到此处（可多选）</div>
+          <div class="dz-count" id="count-ref">0 张图片</div>
+        </div>
+        <div class="dropzone" id="dz-target">
+          <input type="file" accept="image/*" multiple hidden id="file-target">
+          <div class="dz-icon">📷</div>
+          <div class="dz-title">Target_Figure 当日出工照片</div>
+          <div class="dz-hint">点击选择或拖拽图片到此处（可多选）</div>
+          <div class="dz-count" id="count-target">0 张图片</div>
+        </div>
+      </div>
+
+      <div class="action-row">
+        <button class="btn primary big" id="btn-recognize" disabled>开始人脸识别</button>
+        <button class="btn ghost" id="btn-refresh">刷新状态</button>
+      </div>
+
+      <div class="log-console" id="recog-console"></div>
+      <div class="result-card" id="recog-result" hidden></div>
+
+      <div class="bottom-nav">
+        <span></span>
+        <button class="btn primary" id="btn-next-1" disabled>下一步：上传输入表</button>
+      </div>
+    </section>
+
+    <!-- ════════ 第 2 步：上传输入表 ════════ -->
+    <section class="step-card" id="step-2" hidden>
+      <div class="card-title">
+        <h2>② 上传输入表</h2>
+        <p class="subtitle">确保 input 文件夹内所需文件齐全，全部就绪后进入下一步</p>
+      </div>
+
+      <div class="input-list" id="input-list"></div>
+
+      <div class="bottom-nav">
+        <button class="btn ghost" data-goto="1">上一步</button>
+        <button class="btn primary" id="btn-next-2" disabled>下一步：生成表格</button>
+      </div>
+    </section>
+
+    <!-- ════════ 第 3 步：生成表格 ════════ -->
+    <section class="step-card" id="step-3" hidden>
+      <div class="card-title">
+        <h2>③ 生成表格</h2>
+        <p class="subtitle">依次生成表1~表10；生成 05/06 时会弹窗请人工确认</p>
+      </div>
+
+      <div class="table-chips" id="table-chips"></div>
+
+      <div class="action-row">
+        <button class="btn primary big" id="btn-generate">开始生成</button>
+        <button class="btn ghost" id="btn-skip-final" hidden>直接进入完成页（8/9/10 已存在）</button>
+      </div>
+
+      <div class="log-console" id="gen-console"></div>
+
+      <div class="bottom-nav">
+        <button class="btn ghost" data-goto="2">上一步</button>
+        <span></span>
+      </div>
+    </section>
+
+    <!-- ════════ 第 4 步：完成下载 ════════ -->
+    <section class="step-card" id="step-4" hidden>
+      <div class="done-banner">
+        <div class="done-icon">🎉</div>
+        <h2>全部完成！</h2>
+        <p>所有考勤表已生成，请下载最终考勤表</p>
+      </div>
+
+      <div class="download-area">
+        <h3>最终考勤表</h3>
+        <div class="download-cards">
+          <div class="dl-card" data-file="08_表8工程考勤表.xlsx">
+            <div class="dl-icon">📋</div>
+            <div class="dl-name">表8 工程考勤表</div>
+            <button class="btn small primary js-download">下载</button>
+          </div>
+          <div class="dl-card" data-file="09_表9外协考勤表1.xlsx">
+            <div class="dl-icon">📊</div>
+            <div class="dl-name">表9 外协考勤表1</div>
+            <button class="btn small primary js-download">下载</button>
+          </div>
+          <div class="dl-card" data-file="10_表10外协考勤表2.xlsx">
+            <div class="dl-icon">📈</div>
+            <div class="dl-name">表10 外协考勤表2</div>
+            <button class="btn small primary js-download">下载</button>
+          </div>
+        </div>
+        <div class="zip-row">
+          <button class="btn big primary" id="btn-zip">⬇️ 下载全部（ZIP）</button>
+        </div>
+      </div>
+
+      <div class="bottom-nav">
+        <button class="btn ghost" data-goto="3">上一步</button>
+        <span></span>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ════════ 确认弹窗（05/06 人工核对） ════════ -->
+  <div class="modal-backdrop" id="modal-confirm" hidden>
+    <div class="modal">
+      <div class="modal-title" id="modal-title"></div>
+      <div class="modal-sub" id="modal-sub"></div>
+      <div class="modal-summary" id="modal-summary"></div>
+      <div class="modal-links" id="modal-links"></div>
+      <div class="modal-upload">
+        <div class="mup-label">📎 回传修正表（可选，仅 .xlsx）</div>
+        <input type="file" accept=".xlsx" id="modal-file">
+        <div style="color: var(--muted); font-size: 12px; margin-top: 6px;">上传后将覆盖 output 中对应表格，用于后续表生成</div>
+      </div>
+      <div class="modal-buttons">
+        <button class="btn ghost" id="btn-regen">重新生成</button>
+        <button class="btn primary" id="btn-confirm">确认，继续</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 清空文件夹确认弹窗 ════════ -->
+  <div class="modal-backdrop" id="modal-clear" hidden>
+    <div class="modal">
+      <div class="modal-title">确认清空文件夹？</div>
+      <div class="modal-sub" style="margin-top:8px">
+        将删除 <b>output/</b> 和 <b>Target_Figure/</b> 内的所有文件，<br>
+        此操作<b>不可恢复</b>！
+      </div>
+      <div style="color: var(--muted); font-size: 13px; margin-top: 12px;">
+        不会影响：Ref_Figure（人脸库）、input/（输入表）
+      </div>
+      <div class="modal-buttons">
+        <button class="btn ghost" id="btn-clear-cancel">取消</button>
+        <button class="btn danger" id="btn-clear-confirm">确认清空</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 全局加载遮罩 ════════ -->
+  <div class="loading-mask" id="loading-mask" hidden>
+    <div class="spinner"></div>
+    <div class="loading-text" id="loading-text">处理中…</div>
+  </div>
+
+  <!-- Toast 消息 -->
+  <div class="toast" id="toast"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,8 +1,15 @@
 """人脸识别打卡系统 - 入口"""
 
 import os
+import sys
 from pathlib import Path
 import pandas as pd
+
+# 确保在任意启动方式（含 embeddable runtime）下都能 import face_app
+# 本项目根目录 = 本文件(main/main.py)的上一级
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from face_app import init_face_app, enroll_faces, recognize_faces, save_results_to_excel
 from face_app import init_ocr_engine, extract_text_from_directory
@@ -22,20 +29,33 @@ os.system("cls" if os.name == "nt" else "clear")  # 清空终端
 # ============================================================
 # 配置
 # ============================================================
-BASE_DIR = Path(__file__).parent
+BASE_DIR = PROJECT_ROOT  # 项目根目录（main/main.py 的上一级）
 REF_DIR = BASE_DIR / "Ref_Figure"
 TARGET_DIR = BASE_DIR / "Target_Figure"
 OUTPUT_DIR = BASE_DIR / "output"
 RESULT_FILE = OUTPUT_DIR / "00_程序人脸识别结果.xlsx"
 
-# 人脸库向量缓存：Ref_Figure 图片未变化时复用缓存，跳过向量计算
-FACE_DB_CACHE_FILE = OUTPUT_DIR / "face_db_cache.pkl"
+# 人脸库向量缓存：随人脸库存放，Ref_Figure 图片未变化时复用缓存，跳过向量计算
+FACE_DB_CACHE_FILE = REF_DIR / "face_db_cache.pkl"
 
 # 识别阈值：余弦相似度低于此值视为未知人员（0~1，越高越严格）
 THRESHOLD = 0.45
 
-# 推理后端：["CPUExecutionProvider"] 纯CPU，["CUDAExecutionProvider", "CPUExecutionProvider"] GPU+CPU
-PROVIDERS = ["CUDAExecutionProvider"]
+# 推理后端：自动检测 CUDA → DirectML → CPU（无 GPU 的机器自动回退 CPU，保证可移植）
+PROVIDERS = None  # None 表示自动检测；也可手动指定 ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+
+def _resolve_providers():
+    """按可用性选择推理后端，任意机器（含无 GPU）都能跑。"""
+    try:
+        import onnxruntime as ort
+        avail = set(ort.get_available_providers())
+        for p in ("CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"):
+            if p in avail:
+                return [p, "CPUExecutionProvider"] if p != "CPUExecutionProvider" else [p]
+    except Exception:
+        pass
+    return ["CPUExecutionProvider"]
 
 # 是否保存标注后的可视化图片到 Output/
 SAVE_ANNOTATED = False
@@ -55,8 +75,8 @@ def main():
     print(f"       阈值: {THRESHOLD}")
     print("=" * 50)
 
-    # 1. 初始化模型
-    app = init_face_app(PROVIDERS)
+    # 1. 初始化模型（后端自动检测：CUDA → DirectML → CPU）
+    app = init_face_app(_resolve_providers())
 
     # 2. 录入人脸库（图片未变化时直接复用缓存向量）
     face_db = enroll_faces(app, REF_DIR, SAVE_ANNOTATED, OUTPUT_DIR, FACE_DB_CACHE_FILE)
