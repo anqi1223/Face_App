@@ -1018,18 +1018,52 @@ def _project_matches(t2_proj: str, t5_kaigong: str, t5_shougong: str) -> bool:
 
 
 def _normalize_project(s: str) -> str:
-    """清洗项目名：统一大小写，去除空格等。"""
+    """清洗项目名：统一小写、去除所有空格（含内部空格）。"""
     s = s.strip().lower()
-    s = s.replace("kv", "kV").replace("KV", "kV")
+    s = re.sub(r"\s+", "", s)
     return s
 
 
 def _extract_key(s: str) -> str:
-    """提取项目名中的关键词（如变电站名）。"""
-    s = re.sub(r"\d+KV", "", s, flags=re.IGNORECASE)
+    """提取项目名关键词（变电站名主体），去除电压等级、空格与常见噪声。
+
+    覆盖人工录入常见错误：电压等级大小写 / 缺单位（220kv、220V、220千伏）、
+    多打空格、多写"项目 / 工程 / 变电站"等后缀 —— 只要核心站点名一致即视为匹配。
+    """
+    # 去电压等级前缀（220kv / 110KV / 220V / 500kV / 220千伏 等）
+    s = re.sub(r"\d+\s*(?:k|m|g)?v", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\d+\s*(?:千伏|万伏|伏)", "", s)
+    # 去空格
+    s = re.sub(r"\s+", "", s)
+    # 去常见后缀噪声
+    for noise in ("变电站", "变电所", "项目部", "项目", "工程"):
+        s = s.replace(noise, "")
+    # 去"变"，保留站名主体（如 郭巷变 → 郭巷）
     s = s.replace("变", "")
-    s = s.strip()
     return s if len(s) >= 2 else ""
+
+
+def _find_canonical_project(raw, canonical_projects):
+    """在表2规范项目列表中，找到与 05_ 项目名实质匹配的规范写法。
+
+    - 找到匹配 → 返回规范写法（如 220kv 郭巷变 → 220kV郭巷变）
+    - 找不到匹配（如"公司"）→ 保留原内容，仅去除空格
+    """
+    raw_s = str(raw).strip()
+    if not raw_s:
+        return ""
+    best, best_len = None, -1
+    for c in canonical_projects:
+        if _project_matches(c, raw_s, ""):
+            if c == raw_s:
+                return c
+            klen = len(_extract_key(c))
+            if klen > best_len:
+                best, best_len = c, klen
+    if best:
+        return best
+    # 未匹配：保留原内容，仅去除空格
+    return re.sub(r"\s+", "", raw_s)
 
 
 def get_table6():
@@ -1177,10 +1211,22 @@ def get_table6():
     drop_cols = ["加班时长-基于收工时间测算", "加班时长-上报时长"]
     df6 = df5.drop(columns=[c for c in drop_cols if c in df5.columns])
 
-    # 清理项目名空格
+    # 修正项目名为表2规范写法：先收集表2安排项目的标准写法
+    canonical_projects = []
+    _seen = set()
+    for _info in table2_info.values():
+        _p = str(_info.get("项目", "") or "").strip()
+        if _p and _p not in _seen:
+            _seen.add(_p)
+            canonical_projects.append(_p)
+
+    # 05_ 的开工/收工项目名 → 规范写法（实质匹配则替换为表2标准写法；
+    # 未匹配（如"公司"）保留原内容，仅去除空格）
     for col in ["开工项目名", "收工项目名"]:
         if col in df6.columns:
-            df6[col] = df6[col].astype(str).str.replace(r"\s+", "", regex=True)
+            df6[col] = df6[col].astype(str).map(
+                lambda v: _find_canonical_project(v, canonical_projects)
+            )
 
     # 匹配项目简称
     kaigong_shorts = []
