@@ -83,6 +83,14 @@
       <div class="log-console" id="recog-console"></div>
       <div class="result-card" id="recog-result" hidden></div>
 
+      <div class="review-panel" id="review-panel" hidden>
+        <div class="review-summary" id="review-summary"></div>
+        <div class="action-row">
+          <button class="btn primary" id="btn-review-start">开始人工复核</button>
+          <button class="btn ghost" id="btn-review-skip-all">跳过本次复核</button>
+        </div>
+      </div>
+
       <div class="bottom-nav">
         <span></span>
         <button class="btn primary" id="btn-next-1" disabled>下一步：上传输入表</button>
@@ -137,24 +145,11 @@
       <div class="download-area">
         <h3>最终考勤表</h3>
         <div class="download-cards">
-          <div class="dl-card" data-file="08_表8工程考勤表.xlsx">
+          <div class="dl-card" data-file="08_09_10_最终考勤表.xlsx">
             <div class="dl-icon">📋</div>
-            <div class="dl-name">表8 工程考勤表</div>
+            <div class="dl-name">最终考勤表（表8/9/10 · 一个文件三个子表）</div>
             <button class="btn small primary js-download">下载</button>
           </div>
-          <div class="dl-card" data-file="09_表9外协考勤表1.xlsx">
-            <div class="dl-icon">📊</div>
-            <div class="dl-name">表9 外协考勤表1</div>
-            <button class="btn small primary js-download">下载</button>
-          </div>
-          <div class="dl-card" data-file="10_表10外协考勤表2.xlsx">
-            <div class="dl-icon">📈</div>
-            <div class="dl-name">表10 外协考勤表2</div>
-            <button class="btn small primary js-download">下载</button>
-          </div>
-        </div>
-        <div class="zip-row">
-          <button class="btn big primary" id="btn-zip">⬇️ 下载全部（ZIP）</button>
         </div>
       </div>
 
@@ -166,21 +161,76 @@
 
   </main>
 
-  <!-- ════════ 确认弹窗（05/06 人工核对） ════════ -->
-  <div class="modal-backdrop" id="modal-confirm" hidden>
-    <div class="modal">
-      <div class="modal-title" id="modal-title"></div>
-      <div class="modal-sub" id="modal-sub"></div>
-      <div class="modal-summary" id="modal-summary"></div>
-      <div class="modal-links" id="modal-links"></div>
-      <div class="modal-upload">
-        <div class="mup-label">📎 回传修正表（可选，仅 .xlsx）</div>
-        <input type="file" accept=".xlsx" id="modal-file">
-        <div style="color: var(--muted); font-size: 12px; margin-top: 6px;">上传后将覆盖 output 中对应表格，用于后续表生成</div>
+  <!-- ════════ 表格查看弹窗（表1 预览 / 最终表展示） ════════ -->
+  <div class="modal-backdrop" id="modal-view" hidden>
+    <div class="modal modal-wide modal-tall">
+      <div class="modal-title" id="view-title"></div>
+      <div class="view-hint" id="view-hint" hidden></div>
+      <div class="sheet-tabs" id="view-tabs" hidden></div>
+      <div class="sheet-scroll" id="view-body"></div>
+      <div class="modal-buttons">
+        <button class="btn primary" id="btn-view-continue">继续</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 可编辑表格弹窗（05/06 人工核对与修改） ════════ -->
+  <div class="modal-backdrop" id="modal-edit" hidden>
+    <div class="modal modal-wide modal-tall">
+      <div class="modal-title" id="edit-title"></div>
+      <div class="modal-summary" id="edit-summary"></div>
+      <div class="modal-links" id="edit-links"></div>
+      <div class="edit-body">
+        <div class="edit-col edit-col-left">
+          <div class="edit-col-title">📄 核对信息错误文档</div>
+          <div class="sheet-scroll" id="edit-error-doc"></div>
+        </div>
+        <div class="edit-col edit-col-right">
+          <div class="grid-toolbar">
+            <button class="btn small primary" id="btn-grid-add">➕ 增加一行</button>
+            <span class="grid-tip" id="edit-tip"></span>
+          </div>
+          <div class="sheet-scroll" id="edit-grid-wrap"></div>
+        </div>
       </div>
       <div class="modal-buttons">
-        <button class="btn ghost" id="btn-regen">重新生成</button>
-        <button class="btn primary" id="btn-confirm">确认，继续</button>
+        <button class="btn ghost" id="btn-edit-regen">重新生成</button>
+        <button class="btn ghost" id="btn-edit-skip">不修改继续</button>
+        <button class="btn primary" id="btn-edit-save">保存并继续</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 人工复核弹窗（逐张修正未识别人脸） ════════ -->
+  <div class="modal-backdrop" id="modal-review" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-title" id="rv-title">人工复核未识别人员</div>
+      <div class="modal-sub" id="rv-sub"></div>
+      <div class="rv-warning" id="rv-warning" hidden></div>
+      <div class="rv-body">
+        <div class="rv-photo">
+          <div class="rv-img-wrap" id="rv-img-wrap"></div>
+        </div>
+        <div class="rv-info">
+          <div class="rv-field">
+            <span class="rv-label">照片人员名单（台账表）</span>
+            <span id="rv-person-list"></span>
+          </div>
+          <div class="rv-field">
+            <span class="rv-label">拍照人（不在照片中，不判异常）</span>
+            <b id="rv-reporter"></b>
+          </div>
+          <div class="rv-field">
+            <span class="rv-label">人脸识别结果姓名</span>
+            <span id="rv-recognized"></span>
+          </div>
+          <div class="rv-diffs" id="rv-diffs"></div>
+          <div class="rv-inputs" id="rv-inputs"></div>
+        </div>
+      </div>
+      <div class="modal-buttons">
+        <button class="btn ghost" id="btn-rv-skip">跳过本张</button>
+        <button class="btn primary" id="btn-rv-confirm">确认本张</button>
       </div>
     </div>
   </div>

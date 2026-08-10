@@ -27,9 +27,7 @@ const TABLES = [
 const SEQUENCE = TABLES.map(t => t.key);
 
 const DL_FILES = [
-  { file: "08_表8工程考勤表.xlsx",    name: "表8 工程考勤表" },
-  { file: "09_表9外协考勤表1.xlsx",   name: "表9 外协考勤表1" },
-  { file: "10_表10外协考勤表2.xlsx",  name: "表10 外协考勤表2" },
+  { file: "08_09_10_最终考勤表.xlsx", name: "最终考勤表（表8/9/10）" },
 ];
 
 /* ---------- 工具函数 ---------- */
@@ -63,6 +61,12 @@ function esc(s) {
 /* ---------- 状态渲染 ---------- */
 let status = null;
 
+/* 人工复核状态 */
+let reviewPhotos = [];      // 待复核照片列表
+let reviewIdx = 0;          // 当前复核的照片索引
+let reviewHandled = false;  // 本次会话是否已完成/跳过复核
+let reviewKnownNames = [];  // 人脸库姓名，用作输入建议
+
 async function renderStatus() {
   try {
     status = await api("/api/status");
@@ -75,8 +79,21 @@ async function renderStatus() {
   renderChipsFromStatus();
   renderStepButtons();
   renderStep4Cards();
+  renderReviewPanel();
   const clearBtn = document.getElementById("btn-clear");
   if (clearBtn) clearBtn.disabled = status.recognition_running;
+}
+
+function renderReviewPanel() {
+  const panel = document.getElementById("review-panel");
+  if (!panel) return;
+  panel.hidden = !status.review_pending;
+  if (!status.review_pending) return;
+  const parts = [`有 <b>${status.review_photos || 0}</b> 张照片含未识别人员，需人工复核修正`];
+  if (status.no_face_photos > 0) {
+    parts.push(`另有 <b>${status.no_face_photos}</b> 张照片未检测到人脸（不纳入复核，请另行核实）`);
+  }
+  document.getElementById("review-summary").innerHTML = parts.join("；");
 }
 
 function renderImageCounts() {
@@ -132,10 +149,11 @@ function renderStepButtons() {
   const tables = status.tables || {};
   const allInputs = INPUT_FILES.every(f => status.uploads && status.uploads[f.key]);
 
-  // 第1步 → 第2步：识别已完成，或 00_ 结果已存在
+  // 第1步 → 第2步：识别已完成（且存在未识别人脸时必须先完成/跳过人工复核）
   const recognitionDone = status.recognition_done || !!tables["table3"];
+  const reviewBlocking = status.review_pending && !reviewHandled;
   const next1 = document.getElementById("btn-next-1");
-  if (next1) next1.disabled = !recognitionDone;
+  if (next1) next1.disabled = !recognitionDone || reviewBlocking;
 
   // 第2步 → 第3步：5 个输入表齐全
   const next2 = document.getElementById("btn-next-2");
@@ -259,6 +277,8 @@ function pickAndUpload(f) {
 async function startRecognition() {
   const btn = document.getElementById("btn-recognize");
   btn.disabled = true;
+  reviewHandled = false;  // 重新识别后需重新复核
+  reviewPhotos = [];
   const consoleEl = document.getElementById("recog-console");
   consoleEl.hidden = false;
   consoleEl.textContent = "🚀 人脸识别启动中…\n";
@@ -294,6 +314,10 @@ async function pollRecognition() {
     if (!p.running) {
       renderRecognitionResult(p);
       await renderStatus();
+      // 识别完成后自动弹出人工复核（存在未识别人脸时）
+      if (p.done && p.success && status.review_pending && !reviewHandled) {
+        openReview();
+      }
       return;
     }
   }
@@ -325,6 +349,233 @@ function renderRecognitionResult(p) {
   }
 }
 
+/* ---------- 人工复核（修正未识别人脸） ---------- */
+function renderNameList() {
+  let dl = document.getElementById("review-name-list");
+  if (!dl) {
+    dl = document.createElement("datalist");
+    dl.id = "review-name-list";
+    document.body.appendChild(dl);
+  }
+  dl.innerHTML = "";
+  (reviewKnownNames || []).forEach(n => {
+    const opt = document.createElement("option");
+    opt.value = n;
+    dl.appendChild(opt);
+  });
+}
+
+async function openReview() {
+  const startBtn = document.getElementById("btn-review-start");
+  const summaryEl = document.getElementById("review-summary");
+  startBtn.disabled = true;
+  let data;
+  try {
+    const s = await api("/api/review/start", { method: "POST" });
+    if (!s.success) {
+      toast(s.message || "无法开始复核", "error");
+      return;
+    }
+    // 后台构建（加载模型 + 重检照片）可能耗时数十秒：进度显示在复核面板上，
+    // 不遮挡界面，准备期间仍可点「跳过本次复核」取消。
+    summaryEl.innerHTML = "⏳ 正在准备复核数据…";
+    for (;;) {
+      await sleep(800);
+      const p = await api("/api/review/progress");
+      if (p.progress) summaryEl.innerHTML = "⏳ " + esc(p.progress);
+      if (p.done) {
+        if (!p.success) {
+          toast(p.message === "已取消" ? "已取消复核" : (p.message || "复核数据准备失败"),
+                p.message === "已取消" ? "" : "error");
+          return;
+        }
+        break;
+      }
+    }
+    data = await api("/api/review/data");
+    if (!data.success) {
+      toast(data.message || "复核数据加载失败", "error");
+      return;
+    }
+  } catch (e) {
+    toast("复核数据加载失败: " + e, "error");
+    return;
+  } finally {
+    startBtn.disabled = false;
+  }
+  reviewKnownNames = data.known_names || [];
+  renderNameList();
+  reviewPhotos = (data.photos || []).slice();
+  if (!reviewPhotos.length) {
+    reviewHandled = true;
+    renderReviewPanel();
+    toast("没有需要复核的照片", "success");
+    await renderStatus();
+    return;
+  }
+  reviewIdx = 0;
+  document.getElementById("modal-review").hidden = false;
+  renderReviewPhoto();
+}
+
+function renderReviewPhoto() {
+  if (reviewIdx >= reviewPhotos.length) {
+    finishReview();
+    return;
+  }
+  const p = reviewPhotos[reviewIdx];
+  document.getElementById("rv-title").textContent =
+    `人工复核未识别人员（${reviewIdx + 1}/${reviewPhotos.length}）`;
+  document.getElementById("rv-sub").textContent = p.photo;
+
+  const warn = document.getElementById("rv-warning");
+  if (p.warning) {
+    warn.textContent = "⚠️ " + p.warning;
+    warn.hidden = false;
+  } else {
+    warn.hidden = true;
+  }
+
+  // 信息栏：照片人员名单（来自台账表）、拍照人、识别结果
+  const plEl = document.getElementById("rv-person-list");
+  if (p.person_list && p.person_list.length) {
+    plEl.textContent = p.person_list.join("、");
+    plEl.classList.remove("rv-list-warn");
+  } else {
+    plEl.textContent = p.list_warning || "（无人员名单）";
+    plEl.classList.add("rv-list-warn");
+  }
+  document.getElementById("rv-reporter").textContent = p.reporter || "（无法解析）";
+  document.getElementById("rv-recognized").textContent =
+    (p.recognized_names && p.recognized_names.length) ? p.recognized_names.join("、") : "无";
+
+  // 差异提示（拍照人无法上镜，不算异常，已在后端排除）
+  const d = p.diffs || {};
+  const diffEl = document.getElementById("rv-diffs");
+  const chips = [];
+  if (d.report_not_recognized && d.report_not_recognized.length) {
+    chips.push(`<span class="rv-diff-chip warn">名单中有识别中无（不含拍照人）：${esc(d.report_not_recognized.join("、"))}</span>`);
+  }
+  if (d.recognized_not_report && d.recognized_not_report.length) {
+    chips.push(`<span class="rv-diff-chip info">识别中有名单中无：${esc(d.recognized_not_report.join("、"))}</span>`);
+  }
+  if (!chips.length) {
+    chips.push(`<span class="rv-diff-chip ok">名单与识别一致</span>`);
+  }
+  diffEl.innerHTML = chips.join("");
+
+  // 照片 + 未识别人脸红框（按原图比例 % 定位，自适应缩放）
+  const wrap = document.getElementById("rv-img-wrap");
+  wrap.innerHTML = "";
+  const img = document.createElement("img");
+  img.className = "rv-img";
+  img.alt = p.photo;
+  img.onerror = () => {
+    const err = document.createElement("div");
+    err.className = "rv-img-error";
+    err.textContent = "原图无法加载（可能不在 Target_Figure 中）";
+    wrap.appendChild(err);
+  };
+  img.onload = () => {
+    const nw = img.naturalWidth || 1;
+    const nh = img.naturalHeight || 1;
+    (p.unknown_faces || []).forEach((f, i) => {
+      if (!f.box || f.box.length < 4) return;
+      const [x1, y1, x2, y2] = f.box;
+      // 不画红框（图片小时会遮脸），直接在脸部框正下方（胸口/身体处）标序号
+      const num = document.createElement("span");
+      num.className = "rv-box-num";
+      num.textContent = i + 1;
+      num.style.left = (((x1 + x2) / 2) / nw * 100) + "%";
+      num.style.top = (y2 / nh * 100) + "%";
+      wrap.appendChild(num);
+    });
+  };
+  img.src = "/api/target_image/" + encodeURIComponent(p.photo);
+  wrap.appendChild(img);
+
+  // 姓名输入框：有几个人未识别就给几个框
+  const inputsEl = document.getElementById("rv-inputs");
+  inputsEl.innerHTML = "";
+  if (!(p.unknown_faces || []).length) {
+    inputsEl.innerHTML = `<div class="rv-empty">该照片没有可框选的未识别人脸${p.warning ? `（${esc(p.warning)}）` : ""}</div>`;
+  } else {
+    (p.unknown_faces || []).forEach((f, i) => {
+      const row = document.createElement("div");
+      row.className = "rv-input-row";
+      const label = document.createElement("label");
+      label.innerHTML = `未识别人脸 <b>${i + 1}</b>`;
+      const input = document.createElement("input");
+      input.className = "rv-name-input";
+      input.placeholder = "请输入姓名（可留空跳过）";
+      input.dataset.seq = f.seq || "";
+      input.setAttribute("list", "review-name-list");
+      input.addEventListener("keydown", e => {
+        if (e.key === "Enter") { e.preventDefault(); confirmReviewPhoto(); }
+      });
+      row.appendChild(label);
+      row.appendChild(input);
+      inputsEl.appendChild(row);
+    });
+    const first = inputsEl.querySelector(".rv-name-input");
+    if (first) first.focus();
+  }
+}
+
+async function confirmReviewPhoto() {
+  const p = reviewPhotos[reviewIdx];
+  if (!p) return;
+  const corrections = [];
+  document.querySelectorAll("#rv-inputs .rv-name-input").forEach(inp => {
+    const name = inp.value.trim();
+    if (name) corrections.push({ seq: inp.dataset.seq || "", name });
+  });
+  setMask(true, "正在写入识别结果…");
+  try {
+    const res = await api("/api/review_submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ photo: p.photo, corrections }),
+    });
+    if (res.success) {
+      if (res.updated > 0) toast(`已更新 ${res.updated} 条识别记录`, "success");
+      else toast("未填写姓名，已跳过本张", "");
+      reviewPhotos.splice(reviewIdx, 1);  // 本张处理完，进入下一张
+      renderReviewPhoto();
+    } else {
+      toast(res.message || "写入失败", "error");
+    }
+  } catch (e) {
+    toast("请求失败: " + e, "error");
+  } finally {
+    setMask(false);
+  }
+}
+
+function skipReviewPhoto() {
+  if (reviewIdx >= reviewPhotos.length) return;
+  reviewPhotos.splice(reviewIdx, 1);
+  renderReviewPhoto();
+}
+
+function skipAllReview() {
+  api("/api/review/cancel", { method: "POST" });  // 取消后台构建，避免占用模型锁
+  reviewPhotos = [];
+  reviewHandled = true;
+  document.getElementById("modal-review").hidden = true;
+  renderReviewPanel();
+  toast("已跳过本次复核", "");
+  renderStatus();
+}
+
+function finishReview() {
+  document.getElementById("modal-review").hidden = true;
+  reviewHandled = true;
+  renderReviewPanel();
+  toast("复核完成", "success");
+  renderStatus();
+}
+
 /* ---------- 生成表格（Step3） ---------- */
 async function startGeneration() {
   const genBtn = document.getElementById("btn-generate");
@@ -348,28 +599,18 @@ async function startGeneration() {
     if (res.output) appendLog(consoleEl, res.output);
     setChipState(key, res.success ? "done" : "failed");
 
-    if (res.confirm_required) {
-      const target = key === "table5" ? "05" : "06";
-      let choice;
-      let reRunFailed = false;
-      do {
-        choice = await waitForConfirm(key, res.table_info, target);
-        if (!choice.confirmed) {
-          setChipState(key, "running");
-          res = await api("/api/run_table/" + key, { method: "POST" });
-          if (res.output) appendLog(consoleEl, res.output);
-          setChipState(key, res.success ? "done" : "failed");
-          if (!res.success) { reRunFailed = true; break; }  // 重新生成失败，退出确认循环
-        }
-      } while (!choice.confirmed);
-      if (reRunFailed) {
-        toast(`❌ ${res.label || key} 重新生成失败，请查看日志`, "error");
-        break;
-      }
-      await api("/api/confirm/" + target, {
-        method: "POST",
-        body: choice.file ? (() => { const fd = new FormData(); fd.append("file", choice.file); return fd; })() : undefined,
-      });
+    // 各表生成后的查看/编辑弹窗
+    if (res.success && key === "table1") {
+      await waitForView("table1", "表1 今日相机出工信息提取表", "继续",
+        "红色高亮 = 存在开工/收工汇报异常的人员");
+    }
+    if (res.success && (key === "table5" || key === "table6")) {
+      const ok = await handleEditStep(key, res.table_info);
+      if (!ok) break;  // 重新生成失败
+    }
+    if (res.success && key === "table8_9_10") {
+      await waitForView("final", "最终考勤表（表8/9/10）", "完成",
+        "可直接框选表格内容复制到 Excel（合并单元格格式已保留）");
     }
 
     if (!res.success) {
@@ -404,56 +645,206 @@ function setChipState(key, state) {
   chip.className = "table-chip " + state;
 }
 
-/* ---------- 确认弹窗（05/06） ---------- */
-function waitForConfirm(key, tableInfo, target) {
+/* ---------- 表格查看 / 可编辑弹窗（表1、05、06、最终表） ---------- */
+function waitForView(key, title, continueText, hint) {
   return new Promise(resolve => {
-    const modal = document.getElementById("modal-confirm");
-    const title = document.getElementById("modal-title");
-    const sub = document.getElementById("modal-sub");
-    const summary = document.getElementById("modal-summary");
-    const links = document.getElementById("modal-links");
-    const fileInput = document.getElementById("modal-file");
-    fileInput.value = "";
+    const modal = document.getElementById("modal-view");
+    document.getElementById("view-title").textContent = title;
+    const hintEl = document.getElementById("view-hint");
+    if (hint) { hintEl.textContent = hint; hintEl.hidden = false; }
+    else hintEl.hidden = true;
+    const body = document.getElementById("view-body");
+    const tabs = document.getElementById("view-tabs");
+    body.innerHTML = '<div style="padding:20px;color:var(--muted)">加载中…</div>';
+    api("/api/view_sheet/" + key).then(res => {
+      if (!res.success) {
+        body.innerHTML = `<div style="padding:20px;color:var(--danger)">${esc(res.message || "加载失败")}</div>`;
+        return;
+      }
+      const sheets = res.sheets || [];
+      const show = html => { body.innerHTML = html; };
+      if (sheets.length > 1) {
+        tabs.hidden = false;
+        tabs.innerHTML = "";
+        sheets.forEach((s, i) => {
+          const b = document.createElement("button");
+          b.className = "sheet-tab" + (i === 0 ? " active" : "");
+          b.textContent = s.name;
+          b.onclick = () => {
+            tabs.querySelectorAll(".sheet-tab").forEach(x => x.classList.remove("active"));
+            b.classList.add("active");
+            show(s.html);
+          };
+          tabs.appendChild(b);
+        });
+        show(sheets[0].html);
+      } else {
+        tabs.hidden = true;
+        show(sheets[0] ? sheets[0].html : "");
+      }
+    }).catch(e => {
+      body.innerHTML = `<div style="padding:20px;color:var(--danger)">加载失败: ${esc(String(e))}</div>`;
+    });
+    const cont = document.getElementById("btn-view-continue");
+    cont.textContent = continueText || "继续";
+    cont.onclick = () => { modal.hidden = true; resolve(true); };
+    modal.hidden = false;
+  });
+}
 
-    const is5 = target === "05";
-    const tableName = is5 ? "05_该日出工人员表" : "06_全体人员出工情况表";
-    title.textContent = `生成 ${tableName} · 人工核对`;
-    sub.textContent = "请核对下方信息，可下载/回传修正表后继续";
+let editState = null;  // 当前可编辑表格的状态
 
-    summary.innerHTML = "";
+function makeGridRow(rowVals, columns, editable, locked, pendingIdx) {
+  const tr = document.createElement("tr");
+  columns.forEach((c, ci) => {
+    const td = document.createElement("td");
+    const val = (rowVals && rowVals[ci] != null) ? String(rowVals[ci]) : "";
+    const span = document.createElement("span");
+    span.className = "cell-val" + (locked.has(ci) ? " locked" : "");
+    if (editable.has(ci)) span.setAttribute("contenteditable", "true");
+    span.textContent = val;
+    td.appendChild(span);
+    if (pendingIdx === ci && !val.trim()) {
+      const badge = document.createElement("span");
+      badge.className = "cell-pending";
+      badge.textContent = "待确认";
+      td.appendChild(badge);
+    }
+    tr.appendChild(td);
+  });
+  const op = document.createElement("td");
+  op.className = "grid-op-col";
+  const del = document.createElement("button");
+  del.className = "btn tiny danger";
+  del.textContent = "✕";
+  del.title = "删除该行";
+  del.onclick = () => tr.remove();
+  op.appendChild(del);
+  tr.appendChild(op);
+  return tr;
+}
+
+function renderEditGrid(data) {
+  editState = data;
+  const wrap = document.getElementById("edit-grid-wrap");
+  const columns = data.columns || [];
+  const editable = new Set(data.editable_idxs || []);
+  const locked = new Set(data.locked_idxs || []);
+  const pendingIdx = data.pending_idx != null ? data.pending_idx : -1;
+
+  const tbl = document.createElement("table");
+  const sticky = (columns[0] === "姓名") ? " sticky-name" : "";
+  tbl.className = "sheet-table rv-grid" + sticky;
+  let head = "<thead><tr>";
+  columns.forEach(c => { head += `<th>${esc(c)}</th>`; });
+  head += "<th class='grid-op-col'></th></tr></thead>";
+  tbl.innerHTML = head;
+  const tbody = document.createElement("tbody");
+  (data.rows || []).forEach(rv => tbody.appendChild(makeGridRow(rv, columns, editable, locked, pendingIdx)));
+  tbl.appendChild(tbody);
+  wrap.innerHTML = "";
+  wrap.appendChild(tbl);
+
+  document.getElementById("edit-tip").textContent =
+    pendingIdx >= 0
+      ? "「加班时长确认-人工审核」列空值显示「待确认」，填上数字即为确认"
+      : "仅「开工/收工项目名、简称」可修改，其余列为只读";
+}
+
+function saveEditGrid(key) {
+  if (!editState) { toast("表格尚未加载", "error"); return Promise.resolve(null); }
+  const rows = [];
+  document.querySelectorAll("#edit-grid-wrap tbody tr").forEach(tr => {
+    const vals = tr.querySelectorAll(".cell-val");
+    rows.push(Array.from(vals).map(v => v.textContent.trim()));
+  });
+  setMask(true, "正在保存…");
+  return api("/api/edit_save/" + key, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ columns: editState.columns, rows }),
+  }).then(res => {
+    if (res.success) { toast(res.message || "已保存", "success"); return true; }
+    toast(res.message || "保存失败", "error");
+    return null;
+  }).catch(e => {
+    toast("保存请求失败: " + e, "error");
+    return null;
+  }).finally(() => setMask(false));
+}
+
+function waitForEdit(key, errorKey, label, tableInfo) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("modal-edit");
+    document.getElementById("edit-title").textContent = `生成 ${label} · 人工核对与修改`;
+
     const info = tableInfo || {};
     const normal = info.normal != null ? info.normal : "—";
     const abnormal = info.abnormal != null ? info.abnormal : "—";
-    summary.innerHTML = `
+    document.getElementById("edit-summary").innerHTML = `
       <span class="sum-chip normal">正常 ${normal} 人</span>
-      <span class="sum-chip abnormal">异常 ${abnormal} 人</span>
-    `;
+      <span class="sum-chip abnormal">异常 ${abnormal} 人</span>`;
 
+    const links = document.getElementById("edit-links");
     links.innerHTML = "";
-    if (info.error_doc) {
-      links.appendChild(downloadLink(info.error_doc, "📄 下载 核对信息错误文档"));
-    }
-    if (info.table_file) {
-      links.appendChild(downloadLink(info.table_file, "📥 下载 " + tableName));
-    }
+    if (info.error_doc) links.appendChild(downloadLink(info.error_doc, "📄 下载 核对信息错误文档"));
+    if (info.table_file) links.appendChild(downloadLink(info.table_file, "📥 下载 " + label));
 
-    const confirmBtn = document.getElementById("btn-confirm");
-    const regenBtn = document.getElementById("btn-regen");
+    const errDoc = document.getElementById("edit-error-doc");
+    errDoc.innerHTML = '<div style="padding:10px;color:var(--muted)">加载核对信息错误文档…</div>';
+    api("/api/view_sheet/" + errorKey).then(res => {
+      errDoc.innerHTML = (res.success && res.sheets && res.sheets[0])
+        ? res.sheets[0].html
+        : `<div style="padding:10px;color:var(--muted)">${esc(res.message || "无错误文档")}</div>`;
+    });
+
+    const gridWrap = document.getElementById("edit-grid-wrap");
+    gridWrap.innerHTML = '<div style="padding:20px;color:var(--muted)">加载表格…</div>';
+    api("/api/edit_data/" + key).then(res => {
+      if (!res.success) {
+        gridWrap.innerHTML = `<div style="padding:20px;color:var(--danger)">${esc(res.message || "加载失败")}</div>`;
+        return;
+      }
+      renderEditGrid(res);
+    });
+
+    const saveBtn = document.getElementById("btn-edit-save");
+    const skipBtn = document.getElementById("btn-edit-skip");
+    const regenBtn = document.getElementById("btn-edit-regen");
     function cleanup() {
       modal.hidden = true;
-      confirmBtn.onclick = null;
-      regenBtn.onclick = null;
+      saveBtn.onclick = skipBtn.onclick = regenBtn.onclick = null;
     }
-    confirmBtn.onclick = () => {
+    saveBtn.onclick = async () => {
+      const ok = await saveEditGrid(key);
+      if (!ok) return;  // 保存失败则不关闭
       cleanup();
-      resolve({ confirmed: true, file: fileInput.files[0] || null });
+      resolve("save");
     };
-    regenBtn.onclick = () => {
-      cleanup();
-      resolve({ confirmed: false });
-    };
+    skipBtn.onclick = () => { cleanup(); resolve("skip"); };
+    regenBtn.onclick = () => { cleanup(); resolve("regen"); };
     modal.hidden = false;
   });
+}
+
+async function handleEditStep(key, tableInfo) {
+  const errorKey = key === "table5" ? "error1" : "error2";
+  const label = key === "table5" ? "05_该日出工人员表" : "06_全体人员出工情况表";
+  const consoleEl = document.getElementById("gen-console");
+  for (;;) {
+    const choice = await waitForEdit(key, errorKey, label, tableInfo);
+    if (choice !== "regen") return true;
+    // 重新生成
+    setChipState(key, "running");
+    const res = await api("/api/run_table/" + key, { method: "POST" });
+    if (res.output) appendLog(consoleEl, res.output);
+    setChipState(key, res.success ? "done" : "failed");
+    if (!res.success) {
+      toast(`❌ ${res.label || key} 重新生成失败，请查看日志`, "error");
+      return false;
+    }
+    tableInfo = res.table_info;
+  }
 }
 
 function downloadLink(path, text) {
@@ -463,6 +854,19 @@ function downloadLink(path, text) {
   return a;
 }
 
+function addGridRow() {
+  if (!editState) { toast("表格尚未加载", "error"); return; }
+  const tbody = document.querySelector("#edit-grid-wrap tbody");
+  if (!tbody) return;
+  const editable = new Set(editState.editable_idxs || []);
+  const locked = new Set(editState.locked_idxs || []);
+  const row = makeGridRow(
+    new Array(editState.columns.length).fill(""),
+    editState.columns, editable, locked, editState.pending_idx
+  );
+  tbody.appendChild(row);
+}
+
 /* ---------- 下载 ---------- */
 function initDownloads() {
   document.querySelectorAll(".js-download").forEach(btn => {
@@ -470,9 +874,6 @@ function initDownloads() {
       const file = btn.closest(".dl-card").dataset.file;
       window.location.href = "/api/download/" + encodeURIComponent(file);
     });
-  });
-  document.getElementById("btn-zip").addEventListener("click", () => {
-    window.location.href = "/api/download_zip";
   });
 }
 
@@ -518,6 +919,13 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-skip-final").addEventListener("click", () => gotoStep(4));
   document.getElementById("btn-next-1").addEventListener("click", () => gotoStep(2));
   document.getElementById("btn-next-2").addEventListener("click", () => gotoStep(3));
+
+  document.getElementById("btn-review-start").addEventListener("click", openReview);
+  document.getElementById("btn-review-skip-all").addEventListener("click", skipAllReview);
+  document.getElementById("btn-rv-confirm").addEventListener("click", confirmReviewPhoto);
+  document.getElementById("btn-rv-skip").addEventListener("click", skipReviewPhoto);
+
+  document.getElementById("btn-grid-add").addEventListener("click", addGridRow);
 
   renderStatus();
   setInterval(renderStatus, 15000); // 周期刷新

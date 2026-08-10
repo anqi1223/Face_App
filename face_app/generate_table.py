@@ -36,7 +36,7 @@
 
     get_table8_9_10()
     输入: output/07_表7出工地点及时长统计表.xlsx + input/05_工程与外协考勤表模板
-    输出: output/08_表8工程考勤表+output/09_表9外协考勤表1+output/10_表10外协考勤表2
+    输出: output/08_09_10_最终考勤表.xlsx（一个文件三个子表：表8/表9/表10）
 
 """
 
@@ -2126,11 +2126,23 @@ def get_table8_9_10():
     fill_table9(wb, table7_data)
     fill_table10(wb, table7_data)
 
-    # 4. 每个表保存为独立文件（不修改模板文件）
-    print(f"\n生成独立文件:")
-    save_sheet_as_file(wb, "表8工程考勤表模板", OUTPUT_DIR / "08_表8工程考勤表.xlsx")
-    save_sheet_as_file(wb, "表9外协考勤表1模板", OUTPUT_DIR / "09_表9外协考勤表1.xlsx")
-    save_sheet_as_file(wb, "表10外协考勤表2模板", OUTPUT_DIR / "10_表10外协考勤表2.xlsx")
+    # 4. 保存为"一个文件三个子表"（表8/表9/表10，与输入模板同构；不修改模板文件本身）
+    sheet_rename = {
+        "表8工程考勤表模板": "表8工程考勤表",
+        "表9外协考勤表1模板": "表9外协考勤表1",
+        "表10外协考勤表2模板": "表10外协考勤表2",
+    }
+    for old, new in sheet_rename.items():
+        if old in wb.sheetnames:
+            wb[old].title = new
+    # 删除模板自带的空 sheet（如 Sheet1）
+    for ws in list(wb.worksheets):
+        if ws.max_row <= 1 and ws.max_column <= 1 and ws["A1"].value in (None, ""):
+            wb.remove(ws)
+    combined_file = OUTPUT_DIR / "08_09_10_最终考勤表.xlsx"
+    wb.save(combined_file)
+    print(f"\n生成最终考勤表（一个文件三个子表）: {combined_file}")
+    print(f"  子表: {wb.sheetnames}")
 
     wb.close()
     print(f"\n完成!")
