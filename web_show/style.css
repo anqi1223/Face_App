@@ -404,11 +404,14 @@ body {
 .sheet-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
 .sheet-scroll:empty { display: none; }
 
-.sheet-table { border-collapse: collapse; width: 100%; font-size: 13px; background: var(--card); }
+.sheet-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; background: var(--card); }
 .sheet-table th, .sheet-table td {
-  border: 1px solid var(--border); padding: 6px 10px; text-align: left;
-  vertical-align: middle; word-break: break-all; white-space: normal;
+  border: none; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  padding: 6px 10px; text-align: left; vertical-align: middle;
+  word-break: break-all; white-space: normal;
 }
+.sheet-table th:first-child, .sheet-table td:first-child { border-left: 1px solid var(--border); }
+.sheet-table thead th { border-top: 1px solid var(--border); }
 .sheet-table th { background: var(--apple-blue-soft); color: var(--text); font-weight: 600; white-space: nowrap; position: sticky; top: 0; z-index: 2; }
 .sheet-table td.hl-anomaly { background: var(--danger-soft); color: var(--danger); font-weight: 700; }
 
@@ -426,6 +429,37 @@ body {
   z-index: 3; background: var(--card);
   box-shadow: 1px 0 0 var(--border);
 }
+
+/* 表头筛选按钮 / 下拉菜单 */
+.th-filter {
+  margin-left: 6px; padding: 1px 5px; font-size: 11px; line-height: 1;
+  background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  cursor: pointer; color: var(--muted);
+}
+.th-filter:hover { border-color: var(--apple-blue); color: var(--apple-blue); }
+.th-filter.active { background: var(--apple-blue); color: #fff; border-color: var(--apple-blue); }
+
+.filter-menu {
+  position: fixed; z-index: 400; min-width: 140px; max-height: 260px; overflow: auto;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lift); padding: 4px; font-size: 13px;
+}
+.filter-menu-item {
+  padding: 6px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.filter-menu-item:hover { background: var(--apple-blue-soft); color: var(--apple-blue); }
+.filter-menu-item.active { background: var(--apple-blue); color: #fff; }
+
+/* 列宽 / 行高拖拽调整（th/首列td 本身是 sticky 定位上下文，无需额外 relative） */
+.col-resize-handle {
+  position: absolute; top: 0; right: -3px; width: 6px; height: 100%;
+  cursor: col-resize; z-index: 6;
+}
+.row-resize-handle {
+  position: absolute; bottom: -3px; right: 0; height: 6px; width: 100%;
+  cursor: row-resize; z-index: 6;
+}
+body.resizing { cursor: row-resize !important; user-select: none; }
 
 /* 可编辑表格 */
 .rv-grid .cell-val { min-width: 40px; display: inline-block; outline: none; }

@@ -1008,8 +1008,9 @@ def sheet_to_html(ws, highlight_cols=None) -> str:
         else ""
     )
     parts = [f'<table class="sheet-table{sticky}">']
-    for row in ws.iter_rows():
+    for r_idx, row in enumerate(ws.iter_rows()):
         parts.append("<tr>")
+        tag = "th" if r_idx == 0 else "td"  # 首行作表头，便于 CSS 固定表头
         for cell in row:
             rc = (cell.row, cell.column)
             if rc in covered:
@@ -1020,7 +1021,7 @@ def sheet_to_html(ws, highlight_cols=None) -> str:
                 attrs += f' colspan="{span_c}" rowspan="{span_r}"'
             if cell.column - 1 in highlight_idxs and cell.value not in (None, ""):
                 attrs += ' class="hl-anomaly"'
-            parts.append(f"<td{attrs}>{_esc_html(cell.value)}</td>")
+            parts.append(f"<{tag}{attrs}>{_esc_html(cell.value)}</{tag}>")
         parts.append("</tr>")
     parts.append("</table>")
     return "".join(parts)

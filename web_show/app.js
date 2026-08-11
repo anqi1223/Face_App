@@ -577,52 +577,102 @@ function finishReview() {
 }
 
 /* ---------- 生成表格（Step3） ---------- */
+/* ---------- 生成流程（表1→…→最终表）屏栈导航 ---------- */
+const GEN_SCREENS = [
+  { table: "table1", type: "view", viewKey: "table1", title: "表1 今日相机出工信息提取表",
+    hint: "红色高亮 = 存在开工/收工汇报异常的人员", withFilters: true },
+  { table: "table5", type: "edit", label: "05_该日出工人员表", errorKey: "error1" },
+  { table: "table6", type: "edit", label: "06_全体人员出工情况表", errorKey: "error2" },
+  { table: "table8_9_10", type: "view", viewKey: "final", title: "最终考勤表（表8/9/10）",
+    hint: "可直接框选表格内容复制到 Excel（合并单元格格式已保留）", withFilters: false },
+];
+// 从屏幕 i 推进到 i+1 需要运行的中间表
+const TABLES_BETWEEN_SCREENS = {
+  0: ["table2", "table3", "table4", "table5"],
+  1: ["table6"],
+  2: ["table7", "table8_9_10"],
+};
+
+let lastTableInfo = {};  // 表 key -> table_info（05/06 汇总信息）
+let genRegenFrom = 1;    // 首个需要(重新)生成的屏幕索引
+
+async function runOneTable(key) {
+  const consoleEl = document.getElementById("gen-console");
+  setChipState(key, "running");
+  let res;
+  try {
+    res = await api("/api/run_table/" + key, { method: "POST" });
+  } catch (e) {
+    setChipState(key, "failed");
+    appendLog(consoleEl, "【" + key + "】请求失败: " + e);
+    toast("网络错误", "error");
+    return null;
+  }
+  if (res.output) appendLog(consoleEl, res.output);
+  setChipState(key, res.success ? "done" : "failed");
+  if (res.table_info) lastTableInfo[key] = res.table_info;
+  if (!res.success) {
+    toast(`❌ ${res.label || key} 生成失败，请查看日志`, "error");
+    return null;
+  }
+  return res;
+}
+
 async function startGeneration() {
   const genBtn = document.getElementById("btn-generate");
-  const consoleEl = document.getElementById("gen-console");
   genBtn.disabled = true;
-  consoleEl.textContent = "";
-
+  document.getElementById("gen-console").textContent = "";
   resetChips();
-  for (const key of SEQUENCE) {
-    setChipState(key, "running");
-    let res;
-    try {
-      res = await api("/api/run_table/" + key, { method: "POST" });
-    } catch (e) {
-      setChipState(key, "failed");
-      appendLog(consoleEl, "【" + key + "】请求失败: " + e);
-      toast("网络错误", "error");
-      break;
+  lastTableInfo = {};
+  genRegenFrom = 1;
+
+  // 先运行表1，展示屏幕0
+  if (!(await runOneTable("table1"))) { genBtn.disabled = false; return; }
+
+  let pos = 0;
+  for (;;) {
+    const screen = GEN_SCREENS[pos];
+    let choice;
+    if (screen.type === "view") {
+      choice = await waitForView(screen.viewKey, screen.title,
+        pos === GEN_SCREENS.length - 1 ? "完成" : "继续",
+        screen.hint, pos > 0, !!screen.withFilters);
+    } else {
+      choice = await waitForEdit(screen.table, screen.errorKey, screen.label,
+        lastTableInfo[screen.table], pos > 0);
     }
 
-    if (res.output) appendLog(consoleEl, res.output);
-    setChipState(key, res.success ? "done" : "failed");
+    if (choice === "back") { pos -= 1; continue; }
 
-    // 各表生成后的查看/编辑弹窗
-    if (res.success && key === "table1") {
-      await waitForView("table1", "表1 今日相机出工信息提取表", "继续",
-        "红色高亮 = 存在开工/收工汇报异常的人员");
-    }
-    if (res.success && (key === "table5" || key === "table6")) {
-      const ok = await handleEditStep(key, res.table_info);
-      if (!ok) break;  // 重新生成失败
-    }
-    if (res.success && key === "table8_9_10") {
-      await waitForView("final", "最终考勤表（表8/9/10）", "完成",
-        "可直接框选表格内容复制到 Excel（合并单元格格式已保留）");
+    if (choice === "regen") {
+      if (!(await runOneTable(screen.table))) { genBtn.disabled = false; return; }
+      genRegenFrom = Math.min(genRegenFrom, pos + 1);  // 其后的表需重新生成
+      continue;
     }
 
-    if (!res.success) {
-      toast(`❌ ${res.label || key} 生成失败，请查看日志`, "error");
-      break;
+    // "next" / "saved"（保存并继续）
+    if (choice === "saved" && screen.type === "edit") {
+      genRegenFrom = Math.min(genRegenFrom, pos + 1);  // 编辑了 pos，其后的需重跑
     }
+
+    const nextPos = pos + 1;
+    if (nextPos >= GEN_SCREENS.length) break;  // 全部完成
+
+    if (genRegenFrom <= nextPos) {
+      // 重跑 [genRegenFrom-1, nextPos-1] 段，保证目标屏数据最新
+      for (let seg = genRegenFrom - 1; seg <= nextPos - 1; seg++) {
+        for (const k of TABLES_BETWEEN_SCREENS[seg]) {
+          if (!(await runOneTable(k))) { genBtn.disabled = false; return; }
+        }
+      }
+      genRegenFrom = nextPos + 1;
+    }
+    pos = nextPos;
   }
 
   genBtn.disabled = false;
   await renderStatus();
 
-  // 全部成功 → 进入完成页
   const allDone = SEQUENCE.every(key => {
     const chip = document.querySelector(`.table-chip[data-key="${key}"]`);
     return chip && chip.classList.contains("done");
@@ -645,8 +695,152 @@ function setChipState(key, state) {
   chip.className = "table-chip " + state;
 }
 
+/* ---------- 表格增强：表头固定、筛选、行高列宽拖拽 ---------- */
+function enhanceTable(container, withFilters) {
+  container.querySelectorAll(".sheet-table").forEach(table => {
+    if (withFilters) enableTableFilters(table);
+    enableTableResize(table);
+  });
+}
+
+function enableTableFilters(table) {
+  const headerRow = table.querySelector("thead tr");
+  if (!headerRow) return;
+  Array.from(headerRow.cells).forEach((th, ci) => {
+    if (!th.textContent.trim() || th.querySelector(".th-filter")) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "th-filter";
+    btn.textContent = "▾";
+    btn.title = "筛选";
+    btn.addEventListener("click", e => {
+      e.preventDefault(); e.stopPropagation();
+      showFilterMenu(table, ci, btn);
+    });
+    th.appendChild(btn);
+  });
+}
+
+let activeFilterMenu = null;
+
+function showFilterMenu(table, ci, btn) {
+  closeFilterMenu();
+  const menu = document.createElement("div");
+  menu.className = "filter-menu";
+  const values = new Set();
+  table.querySelectorAll("tbody tr").forEach(tr => {
+    const cell = tr.cells[ci];
+    if (cell) {
+      const v = cell.textContent.trim();
+      if (v) values.add(v);
+    }
+  });
+  const current = btn.dataset.filter || "";
+  const add = (label, value) => {
+    const item = document.createElement("div");
+    item.className = "filter-menu-item" + (value === current ? " active" : "");
+    item.textContent = label;
+    item.addEventListener("click", () => {
+      btn.dataset.filter = value || "";
+      btn.classList.toggle("active", !!value);
+      applyFilter(table, ci, value || "");
+      closeFilterMenu();
+    });
+    menu.appendChild(item);
+  };
+  add("（全部）", "");
+  Array.from(values).sort((a, b) => a.localeCompare(b, "zh")).forEach(v => add(v, v));
+  document.body.appendChild(menu);
+  activeFilterMenu = menu;
+  const rect = btn.getBoundingClientRect();
+  menu.style.left = Math.min(rect.left, window.innerWidth - 170) + "px";
+  menu.style.top = (rect.bottom + 4) + "px";
+  setTimeout(() => {
+    document.addEventListener("mousedown", function handler(ev) {
+      if (!menu.contains(ev.target)) { closeFilterMenu(); document.removeEventListener("mousedown", handler); }
+    });
+  }, 0);
+}
+
+function closeFilterMenu() {
+  if (activeFilterMenu) { activeFilterMenu.remove(); activeFilterMenu = null; }
+}
+
+function applyFilter(table, ci, value) {
+  table.querySelectorAll("tbody tr").forEach(tr => {
+    const cell = tr.cells[ci];
+    const v = cell ? cell.textContent.trim() : "";
+    tr.style.display = (!value || v === value) ? "" : "none";
+  });
+}
+
+function getOrCreateCol(table, ci) {
+  let cg = table.querySelector("colgroup");
+  const n = table.querySelector("thead tr").cells.length;
+  if (!cg) {
+    cg = document.createElement("colgroup");
+    table.insertBefore(cg, table.firstChild);
+    for (let i = 0; i < n; i++) cg.appendChild(document.createElement("col"));
+  } else while (cg.children.length < n) cg.appendChild(document.createElement("col"));
+  return cg.children[ci];
+}
+
+function startColResize(table, ci, e) {
+  e.preventDefault();
+  const th = table.querySelector("thead tr").cells[ci];
+  const startX = e.clientX;
+  const startW = th.offsetWidth;
+  const col = getOrCreateCol(table, ci);
+  const onMove = ev => { col.style.width = Math.max(40, startW + (ev.clientX - startX)) + "px"; };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("resizing");
+  };
+  document.body.classList.add("resizing");
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startRowResize(tr, e) {
+  e.preventDefault();
+  const startY = e.clientY;
+  const startH = tr.offsetHeight;
+  const onMove = ev => { tr.style.height = Math.max(20, startH + (ev.clientY - startY)) + "px"; };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("resizing");
+  };
+  document.body.classList.add("resizing");
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function enableTableResize(table) {
+  const headerRow = table.querySelector("thead tr");
+  if (headerRow) {
+    Array.from(headerRow.cells).forEach((th, ci) => {
+      if (th.classList.contains("grid-op-col") || th.querySelector(".col-resize-handle")) return;
+      const handle = document.createElement("div");
+      handle.className = "col-resize-handle";
+      handle.addEventListener("mousedown", e => startColResize(table, ci, e));
+      th.appendChild(handle);
+    });
+  }
+  table.querySelectorAll("tbody tr").forEach(tr => {
+    const lastCell = tr.lastElementChild;
+    if (!lastCell || lastCell.querySelector(".row-resize-handle")) return;
+    lastCell.style.position = "relative";
+    const handle = document.createElement("div");
+    handle.className = "row-resize-handle";
+    handle.addEventListener("mousedown", e => startRowResize(tr, e));
+    lastCell.appendChild(handle);
+  });
+}
+
 /* ---------- 表格查看 / 可编辑弹窗（表1、05、06、最终表） ---------- */
-function waitForView(key, title, continueText, hint) {
+function waitForView(key, title, continueText, hint, canBack, withFilters) {
   return new Promise(resolve => {
     const modal = document.getElementById("modal-view");
     document.getElementById("view-title").textContent = title;
@@ -662,7 +856,7 @@ function waitForView(key, title, continueText, hint) {
         return;
       }
       const sheets = res.sheets || [];
-      const show = html => { body.innerHTML = html; };
+      const show = html => { body.innerHTML = html; enhanceTable(body, withFilters); };
       if (sheets.length > 1) {
         tabs.hidden = false;
         tabs.innerHTML = "";
@@ -686,8 +880,11 @@ function waitForView(key, title, continueText, hint) {
       body.innerHTML = `<div style="padding:20px;color:var(--danger)">加载失败: ${esc(String(e))}</div>`;
     });
     const cont = document.getElementById("btn-view-continue");
+    const back = document.getElementById("btn-view-back");
     cont.textContent = continueText || "继续";
-    cont.onclick = () => { modal.hidden = true; resolve(true); };
+    back.hidden = !canBack;
+    cont.onclick = () => { modal.hidden = true; resolve("next"); };
+    back.onclick = () => { modal.hidden = true; resolve("back"); };
     modal.hidden = false;
   });
 }
@@ -714,12 +911,18 @@ function makeGridRow(rowVals, columns, editable, locked, pendingIdx) {
   });
   const op = document.createElement("td");
   op.className = "grid-op-col";
+  op.style.position = "relative";
   const del = document.createElement("button");
   del.className = "btn tiny danger";
   del.textContent = "✕";
   del.title = "删除该行";
   del.onclick = () => tr.remove();
   op.appendChild(del);
+  // 行高拖拽柄（新增行也自带）
+  const rh = document.createElement("div");
+  rh.className = "row-resize-handle";
+  rh.addEventListener("mousedown", e => startRowResize(tr, e));
+  op.appendChild(rh);
   tr.appendChild(op);
   return tr;
 }
@@ -744,6 +947,7 @@ function renderEditGrid(data) {
   tbl.appendChild(tbody);
   wrap.innerHTML = "";
   wrap.appendChild(tbl);
+  enhanceTable(wrap, true);  // 表头筛选 + 列宽拖拽（行高柄由 makeGridRow 自带）
 
   document.getElementById("edit-tip").textContent =
     pendingIdx >= 0
@@ -773,7 +977,7 @@ function saveEditGrid(key) {
   }).finally(() => setMask(false));
 }
 
-function waitForEdit(key, errorKey, label, tableInfo) {
+function waitForEdit(key, errorKey, label, tableInfo, canBack) {
   return new Promise(resolve => {
     const modal = document.getElementById("modal-edit");
     document.getElementById("edit-title").textContent = `生成 ${label} · 人工核对与修改`;
@@ -811,40 +1015,23 @@ function waitForEdit(key, errorKey, label, tableInfo) {
     const saveBtn = document.getElementById("btn-edit-save");
     const skipBtn = document.getElementById("btn-edit-skip");
     const regenBtn = document.getElementById("btn-edit-regen");
+    const backBtn = document.getElementById("btn-edit-back");
+    backBtn.hidden = !canBack;
     function cleanup() {
       modal.hidden = true;
-      saveBtn.onclick = skipBtn.onclick = regenBtn.onclick = null;
+      saveBtn.onclick = skipBtn.onclick = regenBtn.onclick = backBtn.onclick = null;
     }
     saveBtn.onclick = async () => {
       const ok = await saveEditGrid(key);
       if (!ok) return;  // 保存失败则不关闭
       cleanup();
-      resolve("save");
+      resolve("saved");
     };
-    skipBtn.onclick = () => { cleanup(); resolve("skip"); };
+    skipBtn.onclick = () => { cleanup(); resolve("next"); };
     regenBtn.onclick = () => { cleanup(); resolve("regen"); };
+    backBtn.onclick = () => { cleanup(); resolve("back"); };
     modal.hidden = false;
   });
-}
-
-async function handleEditStep(key, tableInfo) {
-  const errorKey = key === "table5" ? "error1" : "error2";
-  const label = key === "table5" ? "05_该日出工人员表" : "06_全体人员出工情况表";
-  const consoleEl = document.getElementById("gen-console");
-  for (;;) {
-    const choice = await waitForEdit(key, errorKey, label, tableInfo);
-    if (choice !== "regen") return true;
-    // 重新生成
-    setChipState(key, "running");
-    const res = await api("/api/run_table/" + key, { method: "POST" });
-    if (res.output) appendLog(consoleEl, res.output);
-    setChipState(key, res.success ? "done" : "failed");
-    if (!res.success) {
-      toast(`❌ ${res.label || key} 重新生成失败，请查看日志`, "error");
-      return false;
-    }
-    tableInfo = res.table_info;
-  }
 }
 
 function downloadLink(path, text) {
