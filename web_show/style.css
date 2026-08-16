@@ -356,11 +356,14 @@ body {
 
 .rv-box-num {
   position: absolute; transform: translateX(-50%);
-  margin-top: 5px;  /* 脸部框正下方（胸口/身体处），不遮脸 */
+  margin-top: 5px;  /* 脸部框正下方（胸口/身体处），不遮脸；可拖动挪开 */
   background: var(--danger); color: #fff; font-size: 11px; font-weight: 700;
   line-height: 1; padding: 3px 7px; border-radius: 999px;
-  white-space: nowrap; pointer-events: none;
+  white-space: nowrap; cursor: grab; z-index: 5;
+  user-select: none; box-shadow: 0 1px 4px rgba(0,0,0,.3);
 }
+.rv-box-num:hover { background: #E0261C; }
+.rv-box-num.dragging { cursor: grabbing; z-index: 8; opacity: .9; }
 .rv-img-error {
   padding: 30px 10px; text-align: center; color: var(--muted);
   font-size: 13px; line-height: 1.6;
@@ -414,6 +417,34 @@ body {
 .sheet-table thead th { border-top: 1px solid var(--border); }
 .sheet-table th { background: var(--apple-blue-soft); color: var(--text); font-weight: 600; white-space: nowrap; position: sticky; top: 0; z-index: 2; }
 .sheet-table td.hl-anomaly { background: var(--danger-soft); color: var(--danger); font-weight: 700; }
+
+/* ============ 项目信息表步骤 / 确认弹窗 ============ */
+.projinfo-tip { margin-top: 12px; font-size: 13px; }
+.pi-hint { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.pi-input {
+  width: 100%; min-width: 90px; font-family: inherit; font-size: 13px;
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; outline: none;
+}
+.pi-input:focus { border-color: var(--apple-blue); box-shadow: 0 0 0 2px var(--apple-blue-soft); }
+#pi-grid-wrap .sheet-table td { white-space: nowrap; }
+.pi-auto-sep td { background: var(--success-soft) !important; color: var(--success); font-weight: 700; }
+.pi-auto-row td { background: #F3FBF6; color: var(--muted); }
+
+/* 说明列悬停备注 */
+.tip-icon {
+  position: relative; cursor: help; color: var(--apple-blue);
+  font-size: 12px; white-space: nowrap;
+}
+.tip-icon::after {
+  content: attr(data-tip);
+  position: absolute; bottom: 150%; left: 0;
+  width: 320px; max-width: 80vw;
+  background: #1D1D1F; color: #fff; font-size: 12px; line-height: 1.5;
+  padding: 8px 10px; border-radius: 8px; white-space: normal;
+  box-shadow: var(--shadow-lift); z-index: 300;
+  opacity: 0; visibility: hidden; transition: opacity .15s;
+}
+.tip-icon:hover::after { opacity: 1; visibility: visible; }
 
 /* 姓名列固定：横向滚动时首列保持不动 */
 .sheet-table.sticky-name th:first-child,
@@ -471,6 +502,26 @@ body.resizing { cursor: row-resize !important; user-select: none; }
   color: var(--danger); background: var(--danger-soft); border: 1px solid rgba(255,59,48,.35);
   border-radius: 999px; padding: 1px 7px; white-space: nowrap;
 }
+
+/* 核对信息错误文档中的异常姓名行高亮 */
+.rv-grid tr.row-abnormal > td,
+.rv-grid tr.row-abnormal > td:first-child {
+  background: #FFF0EC !important;
+}
+.rv-grid tr.row-abnormal td.cell-pending,
+.rv-grid tr.row-abnormal .cell-pending { background: var(--danger-soft); }
+
+/* 查找 / 替换栏 */
+.find-replace-bar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 8px; flex-shrink: 0;
+}
+.find-replace-bar .pi-input { width: 130px; flex: 0 0 130px; }
+.fr-count { font-size: 12px; color: var(--muted); }
+.cell-val.fr-hit { background: #FFF3B0; outline: 2px solid var(--warn); border-radius: 3px; }
+td.final-editable { cursor: text; border-bottom: 1px dashed var(--apple-blue); }
+td.final-editable:focus { background: var(--apple-blue-soft); outline: 2px solid var(--apple-blue); border-radius: 3px; }
+td.vs-hit { background: #FFF3B0; box-shadow: 0 0 0 2px var(--warn); }
 .grid-op-col { width: 44px; text-align: center; }
 .grid-op-col button { background: none; border: none; cursor: pointer; font-size: 14px; color: var(--danger); }
 .btn.tiny { padding: 3px 8px; font-size: 12px; border-radius: 999px; }

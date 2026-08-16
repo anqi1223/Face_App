@@ -46,7 +46,13 @@ from face_app import (  # 仅依赖 pandas/openpyxl，无需 insightface（懒�
 from face_app.generate_table import (  # 表格输出路径的单一数据源
     TABLE1_FILE, TABLE2_FILE, TABLE3_FILE, TABLE4_FILE,
     TABLE5_FILE, TABLE5_ERROR_FILE, TABLE6_FILE, TABLE6_ERROR_FILE,
-    TABLE7_FILE, PHOTO_LEDGER_FILE, HEADER_ROW, parse_filename, parse_people,
+    TABLE7_FILE, PHOTO_LEDGER_FILE, PROJECT_INFO_FILE, HEADER_ROW,
+    parse_filename, parse_people, build_project_mapping, normalize,
+)
+from face_app.project_info import (  # 生成 000_项目信息表 / 0000_更新表
+    generate_plan as gen_projinfo_plan,
+    write_000 as write_projinfo_000,
+    update_project_stat_0000,
 )
 
 # ============ 配置（与 main.py 保持同步） ============
@@ -62,14 +68,21 @@ FACE_DB_CACHE_FILE = REF_DIR / "face_db_cache.pkl"  # 随人脸库存放
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-# 输入表：web key → input/ 文件名
+# 输入表：web key → input/ 文件名（04_项目信息表 已改由生成，不再上传）
 INPUT_FILES = {
     "photo_ledger": "01_照片台账表.xlsx",
     "work_plan": "02_工作安排表.xlsx",
     "person_class": "03_人员分类表.xlsx",
-    "project_info": "04_项目信息表.xlsx",
     "attendance_template": "05_工程与外协考勤表模板.xlsx",
 }
+
+# 生成 000_项目信息表 的三张输入表
+PROJINFO_FILES = {
+    "project_stat": "04_工地项目统计.xlsx",
+    "weekly_arrange": "06_周工作安排表.xlsx",
+    "weekly_plan": "07_周工作计划表.xlsx",
+}
+PROJINFO_OUT_FILE = OUTPUT_DIR / "000_项目信息表.xlsx"
 
 # 表格函数分发表
 TABLE_FUNCS = {
@@ -121,6 +134,8 @@ OUTPUT_FILES_LABELS = {
     TABLE6_ERROR_FILE.name: "核对信息错误文档2",
     TABLE7_FILE.name: "表7",
     COMBINED_FILE: "最终考勤表（表8/9/10）",
+    "000_项目信息表.xlsx": "项目信息表(000)",
+    "0000_工地项目统计更新.xlsx": "工地项目统计更新(0000)",
 }
 
 app = Flask(__name__)
@@ -165,12 +180,16 @@ def _list_outputs():
     return outputs
 
 
-def _clear_dir(d):
-    """删除目录内的所有文件与子目录（保留目录本身），返回删除项数。"""
+def _clear_dir(d, exclude=None):
+    """删除目录内的所有文件与子目录（保留目录本身），返回删除项数。
+    exclude: 文件名集合，跳过不删（如 000_项目信息表）。"""
+    exclude = exclude or set()
     if not d.is_dir():
         return 0
     n = 0
     for item in d.iterdir():
+        if item.name in exclude:
+            continue
         try:
             if item.is_dir():
                 import shutil
@@ -528,6 +547,8 @@ def api_status():
         "tables": tables,
         "recognition_running": snap["running"],
         "recognition_done": (snap["done"] and snap["success"]) or RESULT_FILE.exists(),
+        "projinfo_files": {key: (INPUT_DIR / fname).exists() for key, fname in PROJINFO_FILES.items()},
+        "projinfo_exists": PROJINFO_OUT_FILE.exists(),
         **_review_meta(),
     })
 
@@ -574,9 +595,12 @@ def upload_images(zone):
 
 @app.route("/api/upload_input/<file_key>", methods=["POST"])
 def upload_input(file_key):
-    if file_key not in INPUT_FILES:
+    if file_key in PROJINFO_FILES:
+        fname = PROJINFO_FILES[file_key]
+    elif file_key in INPUT_FILES:
+        fname = INPUT_FILES[file_key]
+    else:
         return jsonify({"success": False, "message": "未知文件类型"}), 400
-    fname = INPUT_FILES[file_key]
     if "file" not in request.files:
         return jsonify({"success": False, "message": "未收到文件"}), 400
     f = request.files["file"]
@@ -1021,6 +1045,7 @@ def sheet_to_html(ws, highlight_cols=None) -> str:
                 attrs += f' colspan="{span_c}" rowspan="{span_r}"'
             if cell.column - 1 in highlight_idxs and cell.value not in (None, ""):
                 attrs += ' class="hl-anomaly"'
+            attrs += f' data-r="{cell.row}" data-c="{cell.column}"'
             parts.append(f"<{tag}{attrs}>{_esc_html(cell.value)}</{tag}>")
         parts.append("</tr>")
     parts.append("</table>")
@@ -1081,6 +1106,36 @@ EDIT_TABLES = {
 }
 
 
+def _extract_error_names(path):
+    """从核对信息错误文档中提取"姓名"列的所有值（用于 05/06 表格高亮异常行）。"""
+    if not path or not path.exists():
+        return []
+    try:
+        wb = load_workbook(path, data_only=True)
+        ws = wb.active
+        name_col = None
+        header_row = None
+        for r in range(1, min(ws.max_row, 25) + 1):
+            row_vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+            if any(v is not None and str(v).strip() == "姓名" for v in row_vals):
+                name_col = next(
+                    c for c, v in enumerate(row_vals, 1)
+                    if v is not None and str(v).strip() == "姓名"
+                )
+                header_row = r
+                break
+        names = []
+        if name_col:
+            for r in range(header_row + 1, ws.max_row + 1):
+                v = ws.cell(row=r, column=name_col).value
+                if v is not None and str(v).strip():
+                    names.append(str(v).strip())
+        wb.close()
+        return names
+    except Exception:
+        return []
+
+
 @app.route("/api/edit_data/<key>")
 def edit_data(key):
     if key not in EDIT_TABLES:
@@ -1098,6 +1153,13 @@ def edit_data(key):
     editable = (
         columns if info.get("editable_cols") is None else info["editable_cols"]
     )
+    # 出现在核对信息错误文档中的姓名 → 高亮提示
+    error_file = (
+        TABLE5_ERROR_FILE if key == "table5"
+        else TABLE6_ERROR_FILE if key == "table6"
+        else None
+    )
+    highlight_names = _extract_error_names(error_file)
     return jsonify({
         "success": True,
         "columns": columns,
@@ -1105,6 +1167,7 @@ def edit_data(key):
         "editable_idxs": [columns.index(c) for c in editable if c in columns],
         "locked_idxs": [columns.index(c) for c in info["locked_cols"] if c in columns],
         "pending_idx": columns.index(info["pending_col"]) if info.get("pending_col") in columns else -1,
+        "highlight_names": highlight_names,
     })
 
 
@@ -1192,6 +1255,151 @@ def edit_save(key):
 
 
 # ============================================================
+# 生成 000_项目信息表（04_工地项目统计 + 06_周工作安排 + 07_周工作计划）
+# ============================================================
+@app.route("/api/projinfo/plan", methods=["POST"])
+def projinfo_plan():
+    if runner.snapshot()["running"]:
+        return jsonify({"success": False, "message": "人脸识别运行中，请稍候"}), 409
+    missing = [name for fname in PROJINFO_FILES.values() if not (INPUT_DIR / fname).exists()]
+    if missing:
+        return jsonify({
+            "success": False,
+            "message": f"缺少输入表：{', '.join(missing)}（请先上传）",
+        }), 400
+    try:
+        plan = gen_projinfo_plan()
+    except Exception:
+        return jsonify({
+            "success": False,
+            "message": f"生成 000 计划失败：\n{traceback.format_exc()}",
+        }), 500
+    return jsonify({"success": True, **plan})
+
+
+@app.route("/api/projinfo/confirm", methods=["POST"])
+def projinfo_confirm():
+    if runner.snapshot()["running"]:
+        return jsonify({"success": False, "message": "人脸识别运行中，请稍候"}), 409
+    body = request.get_json(silent=True) or {}
+    selections = body.get("selections") or {}  # {rid: {work_short, attendance_short, project_name}}
+    try:
+        plan = gen_projinfo_plan()  # 重跑计划，自动项确定
+        rows = list(plan["auto"])
+        highlight = set()
+        new_items = []
+        for r in plan["review"]:
+            sel = selections.get(str(r["rid"])) or {}
+            name = (sel.get("project_name") or r["suggest_name"] or r["项目名称"]).strip()
+            rows.append({
+                "工作安排简称": (sel.get("work_short") or r["work_short"]).strip(),
+                "项目名称": name,
+                "出勤统计简称": (sel.get("attendance_short") or r["attendance_short"]).strip(),
+            })
+            # 新增行（无直接匹配/等变电站新增）用单元格底色突出显示，并写入 0000 更新表
+            if r["mode"] in ("new", "none"):
+                highlight.add(len(rows) - 1)
+                new_items.append({
+                    "项目名称": name,
+                    "出勤统计简称": (sel.get("attendance_short") or r["attendance_short"]).strip(),
+                })
+        path, n = write_projinfo_000(rows, highlight if highlight else None)
+        upd_msg = ""
+        if new_items:
+            upd_path, upd_n = update_project_stat_0000(new_items, plan.get("period") or "")
+            upd_msg = f"；已更新 0000_工地项目统计更新（新增 {upd_n} 行）"
+    except Exception:
+        return jsonify({
+            "success": False,
+            "message": f"写 000_项目信息表 失败：\n{traceback.format_exc()}",
+        }), 500
+    return jsonify({
+        "success": True,
+        "message": f"已生成 000_项目信息表（{n} 行）{upd_msg}",
+        "projinfo_exists": True,
+        "outputs": _list_outputs(),
+    })
+
+
+def _coerce_cell_value(v):
+    """把前端值转为 Excel 单元格值（数字尽量存数值，其余按字符串）。"""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s == "":
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
+@app.route("/api/edit_final_cell", methods=["POST"])
+def edit_final_cell():
+    """编辑最终考勤表（08_09_10_最终考勤表.xlsx）指定单元格并保存。"""
+    body = request.get_json(silent=True) or {}
+    sheet = body.get("sheet")
+    changes = body.get("changes") or []
+    path = OUTPUT_DIR / COMBINED_FILE
+    if not path.exists():
+        return jsonify({"success": False, "message": "最终考勤表尚未生成"}), 404
+    if not isinstance(changes, list) or not changes:
+        return jsonify({"success": False, "message": "参数错误"}), 400
+    try:
+        wb = load_workbook(path)
+        if sheet not in wb.sheetnames:
+            wb.close()
+            return jsonify({"success": False, "message": f"未知子表: {sheet}"}), 400
+        ws = wb[sheet]
+        for ch in changes:
+            r = int(ch.get("r", 0))
+            c = int(ch.get("c", 0))
+            if r < 1 or c < 1:
+                continue
+            ws.cell(row=r, column=c).value = _coerce_cell_value(ch.get("value"))
+        wb.save(path)
+        wb.close()
+    except Exception:
+        return jsonify({
+            "success": False,
+            "message": f"写回最终考勤表失败：\n{traceback.format_exc()}",
+        }), 500
+    return jsonify({
+        "success": True,
+        "message": f"已更新最终考勤表 {len(changes)} 处",
+        "outputs": _list_outputs(),
+    })
+
+
+@app.route("/api/match_short", methods=["POST"])
+def match_short():
+    """根据 000_项目信息表 匹配项目名 → 出勤统计简称（06 编辑时自动填简称用）。"""
+    body = request.get_json(silent=True) or {}
+    project = str(body.get("project", "")).strip()
+    if not project:
+        return jsonify({"success": True, "short": ""})
+    try:
+        # 1) 按工作安排简称精确匹配
+        exact_lookup, _ = build_project_mapping()
+        proj_norm = normalize(project)
+        if proj_norm in exact_lookup:
+            return jsonify({"success": True, "short": exact_lookup[proj_norm][1]})
+        # 2) 按项目名称匹配（精确/包含）
+        if PROJECT_INFO_FILE.exists():
+            df = pd.read_excel(PROJECT_INFO_FILE)
+            for _, r in df.iterrows():
+                pname = str(r.get("项目名称", "")).strip()
+                pn = normalize(pname)
+                if pn and (pn == proj_norm or pn in proj_norm or proj_norm in pn):
+                    short = str(r.get("出勤统计简称", "")).strip()
+                    if short:
+                        return jsonify({"success": True, "short": short})
+    except Exception:
+        pass
+    return jsonify({"success": True, "short": ""})
+
+
+# ============================================================
 # 清空文件夹（只清 output/ 和 Target_Figure/）
 # ============================================================
 @app.route("/api/clear_folders", methods=["POST"])
@@ -1202,13 +1410,14 @@ def clear_folders():
             "message": "人脸识别正在运行，请先停止后再清空",
         }), 409
     with RUN_LOCK:
-        n_out = _clear_dir(OUTPUT_DIR)
+        # 000_项目信息表 / 0000_工地项目统计更新 不删除
+        n_out = _clear_dir(OUTPUT_DIR, exclude={"000_项目信息表.xlsx", "0000_工地项目统计更新.xlsx"})
         n_tgt = _clear_dir(TARGET_DIR)
     runner.reset()
     review_runner.invalidate()  # 00_ 已删除，复核缓存失效
     return jsonify({
         "success": True,
-        "message": f"已清空：output/（{n_out} 项）、Target_Figure/（{n_tgt} 项）。人脸库与输入表不受影响。",
+        "message": f"已清空：output/（{n_out} 项）、Target_Figure/（{n_tgt} 项）。000_项目信息表已保留；人脸库与输入表不受影响。",
         "outputs": _list_outputs(),
     })
 

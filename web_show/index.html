@@ -40,11 +40,21 @@
     <div class="step-line" data-line="2"></div>
     <div class="step" data-step="3">
       <div class="step-dot">3</div>
-      <span class="step-label">生成表格</span>
+      <span class="step-label">人工复核</span>
     </div>
     <div class="step-line" data-line="3"></div>
     <div class="step" data-step="4">
       <div class="step-dot">4</div>
+      <span class="step-label">项目信息表</span>
+    </div>
+    <div class="step-line" data-line="4"></div>
+    <div class="step" data-step="5">
+      <div class="step-dot">5</div>
+      <span class="step-label">生成表格</span>
+    </div>
+    <div class="step-line" data-line="5"></div>
+    <div class="step" data-step="6">
+      <div class="step-dot">6</div>
       <span class="step-label">完成下载</span>
     </div>
   </nav>
@@ -83,14 +93,6 @@
       <div class="log-console" id="recog-console"></div>
       <div class="result-card" id="recog-result" hidden></div>
 
-      <div class="review-panel" id="review-panel" hidden>
-        <div class="review-summary" id="review-summary"></div>
-        <div class="action-row">
-          <button class="btn primary" id="btn-review-start">开始人工复核</button>
-          <button class="btn ghost" id="btn-review-skip-all">跳过本次复核</button>
-        </div>
-      </div>
-
       <div class="bottom-nav">
         <span></span>
         <button class="btn primary" id="btn-next-1" disabled>下一步：上传输入表</button>
@@ -101,21 +103,63 @@
     <section class="step-card" id="step-2" hidden>
       <div class="card-title">
         <h2>② 上传输入表</h2>
-        <p class="subtitle">确保 input 文件夹内所需文件齐全，全部就绪后进入下一步</p>
+        <p class="subtitle">先上传 01_照片台账表 等输入表（人工复核的人员名单取自台账表），全部就绪后进入下一步</p>
       </div>
 
       <div class="input-list" id="input-list"></div>
 
       <div class="bottom-nav">
         <button class="btn ghost" data-goto="1">上一步</button>
-        <button class="btn primary" id="btn-next-2" disabled>下一步：生成表格</button>
+        <button class="btn primary" id="btn-next-2" disabled>下一步：人工复核</button>
       </div>
     </section>
 
-    <!-- ════════ 第 3 步：生成表格 ════════ -->
+    <!-- ════════ 第 3 步：人工复核未识别人员 ════════ -->
     <section class="step-card" id="step-3" hidden>
       <div class="card-title">
-        <h2>③ 生成表格</h2>
+        <h2>③ 人工复核未识别人员</h2>
+        <p class="subtitle">逐张核对未识别的人脸并补全姓名（人员名单已基于 01_照片台账表 匹配）</p>
+      </div>
+
+      <div class="review-panel" id="review-panel" hidden>
+        <div class="review-summary" id="review-summary"></div>
+        <div class="action-row">
+          <button class="btn primary" id="btn-review-start">开始人工复核</button>
+          <button class="btn ghost" id="btn-review-skip-all">跳过本次复核</button>
+        </div>
+      </div>
+
+      <div class="bottom-nav">
+        <button class="btn ghost" data-goto="2">上一步</button>
+        <button class="btn primary" id="btn-next-3" disabled>下一步：项目信息表</button>
+      </div>
+    </section>
+
+    <!-- ════════ 第 4 步：生成项目信息表 ════════ -->
+    <section class="step-card" id="step-4" hidden>
+      <div class="card-title">
+        <h2>④ 生成项目信息表</h2>
+        <p class="subtitle">上传 04_工地项目统计、06_周工作安排表、07_周工作计划表，生成 output/000_项目信息表（一个周期内生成一次即可，不需要时可跳过）</p>
+      </div>
+
+      <div class="input-list" id="projinfo-list"></div>
+
+      <div class="action-row">
+        <button class="btn primary big" id="btn-projinfo-gen" disabled>生成项目信息表</button>
+        <button class="btn ghost" id="btn-projinfo-status" disabled>刷新状态</button>
+      </div>
+      <div class="projinfo-tip" id="projinfo-tip"></div>
+
+      <div class="bottom-nav">
+        <button class="btn ghost" data-goto="3">上一步</button>
+        <button class="btn primary" id="btn-next-4">下一步：生成表格</button>
+      </div>
+    </section>
+
+    <!-- ════════ 第 5 步：生成表格 ════════ -->
+    <section class="step-card" id="step-5" hidden>
+      <div class="card-title">
+        <h2>⑤ 生成表格</h2>
         <p class="subtitle">依次生成表1~表10；生成 05/06 时会弹窗请人工确认</p>
       </div>
 
@@ -129,13 +173,13 @@
       <div class="log-console" id="gen-console"></div>
 
       <div class="bottom-nav">
-        <button class="btn ghost" data-goto="2">上一步</button>
+        <button class="btn ghost" data-goto="4">上一步</button>
         <span></span>
       </div>
     </section>
 
-    <!-- ════════ 第 4 步：完成下载 ════════ -->
-    <section class="step-card" id="step-4" hidden>
+    <!-- ════════ 第 6 步：完成下载 ════════ -->
+    <section class="step-card" id="step-6" hidden>
       <div class="done-banner">
         <div class="done-icon">🎉</div>
         <h2>全部完成！</h2>
@@ -154,7 +198,7 @@
       </div>
 
       <div class="bottom-nav">
-        <button class="btn ghost" data-goto="3">上一步</button>
+        <button class="btn ghost" data-goto="5">上一步</button>
         <span></span>
       </div>
     </section>
@@ -166,6 +210,11 @@
     <div class="modal modal-wide modal-tall">
       <div class="modal-title" id="view-title"></div>
       <div class="view-hint" id="view-hint" hidden></div>
+      <div class="find-replace-bar" id="view-search-bar" hidden>
+        <input type="text" id="vs-find" class="pi-input" placeholder="搜索内容（回车=下一个）">
+        <button class="btn tiny" id="vs-next" type="button">查找下一个</button>
+        <span class="fr-count" id="vs-tip">出工情况列可直接修改，失焦自动保存到最终考勤表</span>
+      </div>
       <div class="sheet-tabs" id="view-tabs" hidden></div>
       <div class="sheet-scroll" id="view-body"></div>
       <div class="modal-buttons">
@@ -187,6 +236,14 @@
           <div class="sheet-scroll" id="edit-error-doc"></div>
         </div>
         <div class="edit-col edit-col-right">
+          <div class="find-replace-bar">
+            <input type="text" id="fr-find" class="pi-input" placeholder="查找内容" title="查找内容（回车=查找下一个）">
+            <input type="text" id="fr-replace" class="pi-input" placeholder="替换为" title="替换为（回车=替换一次）">
+            <button class="btn tiny" id="fr-next" type="button">查找下一个</button>
+            <button class="btn tiny" id="fr-replace-one" type="button">替换</button>
+            <button class="btn tiny danger" id="fr-replace-all" type="button">全部替换</button>
+            <span id="fr-count" class="fr-count"></span>
+          </div>
           <div class="grid-toolbar">
             <button class="btn small primary" id="btn-grid-add">➕ 增加一行</button>
             <span class="grid-tip" id="edit-tip"></span>
@@ -233,6 +290,20 @@
       <div class="modal-buttons">
         <button class="btn ghost" id="btn-rv-skip">跳过本张</button>
         <button class="btn primary" id="btn-rv-confirm">确认本张</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 生成 000_项目信息表 确认弹窗 ════════ -->
+  <div class="modal-backdrop" id="modal-projinfo" hidden>
+    <div class="modal modal-wide modal-tall">
+      <div class="modal-title" id="pi-title">生成 000_项目信息表 · 人工确认</div>
+      <div class="modal-sub" id="pi-period"></div>
+      <div class="pi-hint" id="pi-hint"></div>
+      <div class="sheet-scroll" id="pi-grid-wrap"></div>
+      <div class="modal-buttons">
+        <button class="btn ghost" id="btn-pi-cancel">取消</button>
+        <button class="btn primary" id="btn-pi-confirm">确认生成</button>
       </div>
     </div>
   </div>

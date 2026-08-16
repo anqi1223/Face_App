@@ -24,7 +24,7 @@
 
 
     get_table6()
-    输入: output/05_该日出工人员表.xlsx+ output/02_工作安排_提取表.xlsx + input/04_项目信息表.xlsx
+    输入: output/05_该日出工人员表.xlsx+ output/02_工作安排_提取表.xlsx + output/000_项目信息表.xlsx
     输出:output/06_全体人员出工情况表.xlsx或 核对信息错误文档2.xlsx
     Tips: 如果对比结果没有问题，直接输出 06_全体人员出工情况表.xlsx;
               如果对比结果有问题，输出“核对信息错误文档2.xlsx” 和 “06_全体人员出工情况表.xlsx”
@@ -41,6 +41,7 @@
 """
 
 import re
+import difflib
 from pathlib import Path
 from copy import copy
 from datetime import time
@@ -90,7 +91,7 @@ TABLE5_ERROR_FILE = OUTPUT_DIR / "核对信息错误文档1.xlsx"
 # --- 表6（对比 05_ 与表2，生成 06_全体人员出工情况表） ---
 TABLE6_FILE = OUTPUT_DIR / "06_全体人员出工情况表.xlsx"
 TABLE6_ERROR_FILE = OUTPUT_DIR / "核对信息错误文档2.xlsx"
-PROJECT_INFO_FILE = INPUT_DIR / "04_项目信息表.xlsx"  # 用于出勤统计简称匹配
+PROJECT_INFO_FILE = OUTPUT_DIR / "000_项目信息表.xlsx"  # 用于出勤统计简称匹配（由 project_info 生成）
 
 # --- 表7 ---
 CLASSIFY_FILE = INPUT_DIR / "03_人员分类表.xlsx"
@@ -136,6 +137,14 @@ def parse_people(text: str) -> list[str]:
     # 例: "单工1人（许士祥）"                → 替换为 "许士祥"
     text = re.sub(
         r"[一-龥]+\d*人[（(]([^）)]+)[）)]",
+        lambda m: " ".join(re.findall(r"[一-龥]{2,4}", m.group(1))),
+        text,
+    )
+
+    # 再处理 "类别（实际名）" 模式（无"N人"数字连接，如 临时工（岳磊、梁建普））
+    # 括号里的才是出工人员，类别本身不算
+    text = re.sub(
+        r"[一-龥]{2,6}[（(]([^）)]+)[）)]",
         lambda m: " ".join(re.findall(r"[一-龥]{2,4}", m.group(1))),
         text,
     )
@@ -362,8 +371,9 @@ def get_table1():
         ]
         overtime_report = overtime_report_values[0] if overtime_report_values else ""
 
-        # 汇总拍摄人、地点、存在问题
-        photographers = [r["拍摄人"] for r in records]
+        # 汇总拍摄人（开工/收工分开）、地点、存在问题
+        start_photographers = [r["拍摄人"] for r in start_records]
+        end_photographers = [r["拍摄人"] for r in end_records]
         locations = [r["拍摄地点"] for r in records]
         issues = [r["存在问题"] for r in records]
 
@@ -379,10 +389,11 @@ def get_table1():
                 "开工汇报拍摄时间": format_datetime(start_time),
                 "是否开工汇报异常": start_abnormal,
                 "开工项目名": start_project,
-                "拍摄人": join_unique(photographers),
+                "开工拍摄人": join_unique(start_photographers),
                 "收工汇报拍摄时间": format_datetime(end_time),
                 "是否收工汇报异常": end_abnormal,
                 "收工项目名": end_project,
+                "收工拍摄人": join_unique(end_photographers),
                 "加班时长-基于收工时间测算": (
                     overtime_calc if overtime_calc is not None else ""
                 ),
@@ -400,10 +411,11 @@ def get_table1():
         "开工汇报拍摄时间",
         "是否开工汇报异常",
         "开工项目名",
-        "拍摄人",
+        "开工拍摄人",
         "收工汇报拍摄时间",
         "是否收工汇报异常",
         "收工项目名",
+        "收工拍摄人",
         "加班时长-基于收工时间测算",
         "加班时长-上报时长",
         "加班时长确认-人工审核",
@@ -722,10 +734,18 @@ def get_table5():
     table1_info = {}
     for _, row in df1.iterrows():
         name = str(row["姓名"]).strip()
+        # 01 的拍摄人已拆为 开工拍摄人/收工拍摄人，合并供对比
+        ph_parts = [row.get("开工拍摄人"), row.get("收工拍摄人")]
+        ph = "、".join(
+            dict.fromkeys(
+                str(p).strip() for p in ph_parts
+                if pd.notna(p) and str(p).strip()
+            )
+        )
         table1_info[name] = {
             "开工时间": row.get("开工汇报拍摄时间", ""),
             "收工时间": row.get("收工汇报拍摄时间", ""),
-            "拍摄人": row.get("拍摄人", ""),
+            "拍摄人": ph,
         }
 
     table4_info = {}
@@ -738,8 +758,39 @@ def get_table5():
             "拍摄人": row.get("拍摄人", ""),
         }
 
-    # 3. 逐人对比
-    all_names = sorted(set(table1_info.keys()) | set(table4_info.keys()))
+    # 3. 姓名相近匹配：表1 上报名 ↔ 表4 识别名（如 许士详↔许士祥、韩承俊↔韩承峻）
+    def _name_sim(a, b):
+        return difflib.SequenceMatcher(None, a, b).ratio()
+
+    t1_names = set(table1_info.keys())
+    t4_names = set(table4_info.keys())
+    t1_only = sorted(n for n in t1_names if n not in t4_names)
+    t4_only = sorted(n for n in t4_names if n not in t1_names)
+    name_map = {}  # 表1名 -> 表4名（相近匹配，05 用表4识别名）
+    used_t4 = set()
+    for n1 in t1_only:
+        best, best_sim = None, 0.0
+        for n4 in t4_only:
+            if n4 in used_t4 or len(n1) != len(n4):
+                continue
+            diff = sum(1 for a, b in zip(n1, n4) if a != b)
+            if diff > 1:  # 至多差 1 字
+                continue
+            s = _name_sim(n1, n4)
+            if s > best_sim:
+                best, best_sim = n4, s
+        if best and best_sim >= 0.6:
+            name_map[n1] = best
+            used_t4.add(best)
+    if name_map:
+        print(f"  ✅ 姓名相近匹配 {len(name_map)} 对："
+              + "、".join(f"{k}→{v}" for k, v in name_map.items()))
+
+    # 4. 逐人对比（用规范名：被映射的表1名并入对应表4名）
+    inverse_map = {v: k for k, v in name_map.items()}
+    all_names = sorted(
+        {name_map.get(n, n) for n in t1_names} | t4_names
+    )
 
     rows = []
     normal_count = 0
@@ -747,7 +798,8 @@ def get_table5():
     abnormal_names = []
 
     for name in all_names:
-        in_t1 = name in table1_info
+        t1_key = inverse_map.get(name, name)  # 合并后该人的表1名
+        in_t1 = t1_key in table1_info
         in_t4 = name in table4_info
 
         t1_start = ""
@@ -757,7 +809,7 @@ def get_table5():
         t4_photographer = ""
 
         if in_t1:
-            info = table1_info[name]
+            info = table1_info[t1_key]
             t1_start = (
                 str(info["开工时间"])
                 if pd.notna(info["开工时间"]) and str(info["开工时间"]) != ""
@@ -822,11 +874,100 @@ def get_table5():
             }
         )
 
-    # 4. 输出 05_该日出工人员表（表1 内容，去掉校验用列）
+    # 4. 输出 05_该日出工人员表
+    #    （表1 内容去掉校验列；姓名用表4识别名纠正相近匹配；
+    #      开工/收工时间、项目名、拍摄人 优先用表4人脸识别的实际数据）
     drop_cols = ["是否开工汇报异常", "是否收工汇报异常", "拍摄地点", "存在问题"]
     df5_out = df1.drop(columns=[c for c in drop_cols if c in df1.columns])
+    if name_map:
+        df5_out["姓名"] = df5_out["姓名"].map(
+            lambda n: name_map.get(str(n).strip(), n)
+        )
+
+    # 4.1 照片索引：拍摄时间 -> {工程名称, 汇报类型, 拍摄人}（用于给表4时间配项目）
+    def _ptime(t):
+        try:
+            return pd.to_datetime(t).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(t).strip()
+
+    photo_index = {}
+    try:
+        ledger = pd.read_excel(PHOTO_LEDGER_FILE, header=HEADER_ROW)
+        for _, lr in ledger.iterrows():
+            t = lr.get("拍摄时间")
+            if pd.isna(t):
+                continue
+            k = _ptime(t)
+            if k not in photo_index:
+                photo_index[k] = {
+                    "工程名称": str(lr.get("工程名称", "")).strip() if pd.notna(lr.get("工程名称")) else "",
+                    "汇报类型": str(lr.get("汇报类型", "")).strip() if pd.notna(lr.get("汇报类型")) else "",
+                    "拍摄人": str(lr.get("拍摄人", "")).strip() if pd.notna(lr.get("拍摄人")) else "",
+                }
+    except Exception:
+        photo_index = {}
+
+    # 4.2 表4 每人实际开/收工：按识别时间 → 台账的 汇报类型/工程名称/拍摄人
+    t4_person = {}
+    for _, r in df4.iterrows():
+        name = str(r["姓名"]).strip()
+        times = [str(r[c]).strip() for c in df4.columns
+                 if c.startswith("时间") and pd.notna(r[c]) and str(r[c]).strip()]
+        photographers = [p.strip() for p in str(r.get("拍摄人", "")).split("、") if p.strip()]
+        start, end = "", ""
+        start_proj, end_proj = "", ""
+        start_ph, end_ph = "", ""
+        for t in times:
+            rec = photo_index.get(_ptime(t))
+            if not rec:
+                continue
+            ph = rec["拍摄人"] or (photographers[0] if photographers else "")
+            if rec["汇报类型"] == "开工汇报":
+                if not start or t < start:
+                    start, start_proj, start_ph = t, rec["工程名称"], ph
+            elif rec["汇报类型"] == "收工汇报":
+                if not end or t > end:
+                    end, end_proj, end_ph = t, rec["工程名称"], ph
+        t4_person[name] = {
+            "开工时间": start, "开工项目名": start_proj, "开工拍摄人": start_ph,
+            "收工时间": end, "收工项目名": end_proj, "收工拍摄人": end_ph,
+        }
+
+    # 4.3 05 的开/收工字段完全基于表4（人脸识别）实际数据：
+    #     被识别到的按表4填（表4未确认的置空），未识别到（仅台账误报）的全部置空
+    clear_fields = ["开工汇报拍摄时间", "开工项目名", "开工拍摄人",
+                    "收工汇报拍摄时间", "收工项目名", "收工拍摄人"]
+    for idx, row in df5_out.iterrows():
+        nm = str(row["姓名"]).strip()
+        d = t4_person.get(nm)
+        if not d:
+            # 未被人脸识别（照片台账误报）→ 开/收工字段清空
+            for f in clear_fields:
+                df5_out.at[idx, f] = ""
+        else:
+            df5_out.at[idx, "开工汇报拍摄时间"] = d["开工时间"]
+            df5_out.at[idx, "开工项目名"] = d["开工项目名"]
+            df5_out.at[idx, "开工拍摄人"] = d["开工拍摄人"]
+            df5_out.at[idx, "收工汇报拍摄时间"] = d["收工时间"]
+            df5_out.at[idx, "收工项目名"] = d["收工项目名"]
+            df5_out.at[idx, "收工拍摄人"] = d["收工拍摄人"]
+        # 全天状态 / 加班时长 基于最新时间重算
+        kg = df5_out.at[idx, "开工项目名"]
+        sg = df5_out.at[idx, "收工项目名"]
+        df5_out.at[idx, "全天状态"] = (
+            "全天一致" if (kg and sg and kg == sg)
+            else "半天换场" if (kg and sg and kg != sg)
+            else ""
+        )
+        ot = df5_out.at[idx, "收工汇报拍摄时间"]
+        if ot:
+            df5_out.at[idx, "加班时长-基于收工时间测算"] = calc_overtime(ot)
+
     df5_out.to_excel(TABLE5_FILE, index=False)
     print(f"✅ 已生成 05_该日出工人员表: {TABLE5_FILE}")
+    if t4_person:
+        print(f"  （表4实际出工数据覆盖 {len(t4_person)} 人的开/收工字段）")
 
     # 5. 汇总报告
     total = len(all_names)
@@ -931,8 +1072,6 @@ def _generate_error_doc1(
         "表1拍摄人",
         "表4时间点",
         "表4拍摄人",
-        "判断结论",
-        "复核操作建议",
     ]
     for col_idx, h in enumerate(detail_headers, 1):
         cell = ws.cell(row=row_idx, column=col_idx, value=h)
@@ -946,19 +1085,15 @@ def _generate_error_doc1(
         row_idx += 1
         if "表4未出现" in r["判断结论"]:
             category = "表4未出现"
-            suggestion = "核对该人员是否实际出工：若实际出工则表4人脸识别遗漏，需补录；若未出工则表1为多报/错报，需修正表1"
         elif "表1未出现" in r["判断结论"]:
             category = "表1未出现"
-            suggestion = "核对该人员是否实际出工：若实际出工则表1漏报，需补录表1；若未出工则表4人脸识别错误，需修正"
         elif (
             len(r.get("表1开工汇报拍摄时间", "")) > 0
             or len(r.get("表1收工汇报拍摄时间", "")) > 0
         ):
             category = "时间不匹配"
-            suggestion = "人工比对表1与表4的时间点：确认是拍照时间记录错误、人脸匹配遗漏还是出工多报"
         else:
             category = "其他异常"
-            suggestion = "人工核实原始数据"
 
         vals = [
             i,
@@ -969,8 +1104,6 @@ def _generate_error_doc1(
             r.get("表1拍摄人", ""),
             r.get("表4时间点", ""),
             r.get("表4拍摄人", ""),
-            r["判断结论"],
-            suggestion,
         ]
         for col_idx, v in enumerate(vals, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=v)
@@ -979,7 +1112,7 @@ def _generate_error_doc1(
             cell.alignment = left_align if col_idx >= 4 else center_align
 
     # 列宽
-    col_widths = [6, 10, 12, 22, 22, 12, 30, 12, 42, 50]
+    col_widths = [6, 10, 12, 22, 22, 12, 30, 12]
     for col_idx, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = w
 
@@ -1072,7 +1205,7 @@ def get_table6():
 
       - 对比无问题 → 直接输出 output/06_全体人员出工情况表.xlsx
       - 对比有问题 → 额外输出 output/核对信息错误文档2.xlsx 供人工核对
-      - 06_ 的开工/收工项目简称 通过 002项目信息表（04_项目信息表）匹配
+      - 06_ 的开工/收工项目简称 通过 002项目信息表（000_项目信息表）匹配
     """
     print("=" * 50)
     print("       生成【06_全体人员出工情况表】")
@@ -1152,6 +1285,8 @@ def get_table6():
         # 判断结论
         conclusion = ""
         abnormal = False
+        # 该人是否实际被人脸识别到岗（05 开/收工项目名非空才算真正出工）
+        actually_worked = bool(t5_kaigong_proj or t5_shougong_proj)
 
         if in_t2 and in_t5:
             if t2_arrange == "出工":
@@ -1165,10 +1300,14 @@ def get_table6():
                     conclusion = "出工异常人工复核（安排项目与实际项目不匹配）"
                     abnormal = True
             elif t2_arrange in ("安排休息", "请假", "外协未到岗"):
-                conclusion = (
-                    "出工异常人工复核（安排为「" + t2_arrange + "」但实际有出工记录）"
-                )
-                abnormal = True
+                if actually_worked:
+                    conclusion = (
+                        "出工异常人工复核（安排为「" + t2_arrange + "」但实际有出工记录）"
+                    )
+                    abnormal = True
+                else:
+                    conclusion = "正常（安排「" + t2_arrange + "」，实际未识别到出工，一致）"
+                    normal_count += 1
             else:
                 conclusion = "出工异常人工复核（安排状态未知，需核实）"
                 abnormal = True
@@ -1182,10 +1321,14 @@ def get_table6():
                 conclusion = "正常（安排「" + t2_arrange + "」，无出工记录，一致）"
                 normal_count += 1
         elif not in_t2 and in_t5:
-            conclusion = (
-                "出工异常人工复核（表5有出工记录但表2无此人的安排信息，可能安排遗漏）"
-            )
-            abnormal = True
+            if actually_worked:
+                conclusion = (
+                    "出工异常人工复核（表5有出工记录但表2无此人的安排信息，可能安排遗漏）"
+                )
+                abnormal = True
+            else:
+                conclusion = "正常（表5在列但未识别到实际出工，可能为台账误报）"
+                normal_count += 1
 
         if abnormal:
             abnormal_count += 1
@@ -1438,7 +1581,6 @@ def _generate_error_doc2(df2, df5, normal_count, abnormal_count, abnormal_detail
         "表2安排项目",
         "05_开工项目名",
         "05_收工项目名",
-        "复核操作建议",
     ]
     for col_idx, h in enumerate(detail_headers, 1):
         cell = ws.cell(row=row_idx, column=col_idx, value=h)
@@ -1453,19 +1595,14 @@ def _generate_error_doc2(df2, df5, normal_count, abnormal_count, abnormal_detail
 
         if "安排了出工但无实际出工记录" in judgement:
             category = "安排出工未出工"
-            suggestion = "核实该人员是否实际出工：若实际出工但相机未拍到，需补充出工证明；若确实未出工，需记录缺勤原因"
         elif "安排为" in judgement and "实际有出工" in judgement:
             category = "安排休息但有出工"
-            suggestion = "核实该人员为何在安排为休息/请假/外协未到岗的情况下仍有出工记录：是否存在代打卡或安排表录入错误"
         elif "无此人的安排信息" in judgement:
             category = "出工但无安排"
-            suggestion = "核实该人员是否确实出工：若是，需在安排表中补录；若否，可能为人脸识别误判"
         elif "项目不匹配" in judgement:
             category = "项目不匹配"
-            suggestion = "核对表2安排项目与实际拍摄地点：确认是否为同一项目的不同写法，还是实际去了不同项目"
         else:
             category = "其他异常"
-            suggestion = "人工核实原始排班和出工记录"
 
         vals = [
             i,
@@ -1475,7 +1612,6 @@ def _generate_error_doc2(df2, df5, normal_count, abnormal_count, abnormal_detail
             r.get("表2安排项目", ""),
             r.get("05_开工项目名", ""),
             r.get("05_收工项目名", ""),
-            suggestion,
         ]
         for col_idx, v in enumerate(vals, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=v)
@@ -1483,7 +1619,7 @@ def _generate_error_doc2(df2, df5, normal_count, abnormal_count, abnormal_detail
             cell.border = thin_border
             cell.alignment = left_align if col_idx >= 4 else center_align
 
-    col_widths = [6, 10, 16, 14, 16, 16, 16, 55]
+    col_widths = [6, 10, 16, 14, 16, 16, 16]
     for col_idx, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = w
 

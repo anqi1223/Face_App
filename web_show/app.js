@@ -9,8 +9,14 @@ const INPUT_FILES = [
   { key: "photo_ledger",        name: "照片台账表",            file: "01_照片台账表.xlsx" },
   { key: "work_plan",           name: "工作安排表",            file: "02_工作安排表.xlsx" },
   { key: "person_class",        name: "人员分类表",            file: "03_人员分类表.xlsx" },
-  { key: "project_info",        name: "项目信息表",            file: "04_项目信息表.xlsx" },
   { key: "attendance_template", name: "工程与外协考勤表模板",   file: "05_工程与外协考勤表模板.xlsx" },
+];
+
+// 生成 000_项目信息表 的三张输入表
+const PROJINFO_FILES = [
+  { key: "project_stat",   name: "04_工地项目统计",   file: "04_工地项目统计.xlsx" },
+  { key: "weekly_arrange", name: "06_周工作安排表",   file: "06_周工作安排表.xlsx" },
+  { key: "weekly_plan",    name: "07_周工作计划表",   file: "07_周工作计划表.xlsx" },
 ];
 
 const TABLES = [
@@ -76,6 +82,7 @@ async function renderStatus() {
   }
   renderImageCounts();
   renderInputList();
+  renderProjinfoList();
   renderChipsFromStatus();
   renderStepButtons();
   renderStep4Cards();
@@ -131,6 +138,34 @@ function renderInputList() {
   }
 }
 
+function renderProjinfoList() {
+  const list = document.getElementById("projinfo-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const pfiles = status.projinfo_files || {};
+  for (const f of PROJINFO_FILES) {
+    const ok = !!pfiles[f.key];
+    const row = document.createElement("div");
+    row.className = "input-row";
+    row.innerHTML = `
+      <span class="name">${f.name}</span>
+      <span class="badge ${ok ? "ok" : "missing"}">${ok ? "已上传 ✓" : "未上传"}</span>
+      <span class="desc">input/${f.file}</span>
+      <button class="btn small ${ok ? "ghost" : "primary"}" data-pi-upload-key="${f.key}">${ok ? "重新上传" : "上传"}</button>
+    `;
+    row.querySelector("[data-pi-upload-key]").addEventListener("click", () => pickAndUpload(f));
+    list.appendChild(row);
+  }
+  const genBtn = document.getElementById("btn-projinfo-gen");
+  if (genBtn) genBtn.disabled = !PROJINFO_FILES.every(f => pfiles[f.key]);
+  const tip = document.getElementById("projinfo-tip");
+  if (tip) {
+    tip.innerHTML = status.projinfo_exists
+      ? "✅ <b>output/000_项目信息表</b> 已生成（本周内无需重新生成，可直接下一步；需要重跑时再点「生成项目信息表」）"
+      : "⚠️ 尚未生成 000_项目信息表，请先上传三张表并点击「生成项目信息表」";
+  }
+}
+
 function renderChipsFromStatus() {
   const tables = status.tables || {};
   const wrap = document.getElementById("table-chips");
@@ -149,17 +184,25 @@ function renderStepButtons() {
   const tables = status.tables || {};
   const allInputs = INPUT_FILES.every(f => status.uploads && status.uploads[f.key]);
 
-  // 第1步 → 第2步：识别已完成（且存在未识别人脸时必须先完成/跳过人工复核）
+  // 第1步 → 第2步：识别已完成
   const recognitionDone = status.recognition_done || !!tables["table3"];
-  const reviewBlocking = status.review_pending && !reviewHandled;
   const next1 = document.getElementById("btn-next-1");
-  if (next1) next1.disabled = !recognitionDone || reviewBlocking;
+  if (next1) next1.disabled = !recognitionDone;
 
-  // 第2步 → 第3步：5 个输入表齐全
+  // 第2步 → 第3步：01/02/03/05 输入表齐全（人工复核需基于 01_照片台账表）
   const next2 = document.getElementById("btn-next-2");
   if (next2) next2.disabled = !allInputs;
 
-  // 第3步开始生成：输入表齐全
+  // 第3步 → 第4步：复核完成/跳过（存在未识别人脸时必须先处理）
+  const reviewBlocking = status.review_pending && !reviewHandled;
+  const next3 = document.getElementById("btn-next-3");
+  if (next3) next3.disabled = reviewBlocking;
+
+  // 第4步 → 第5步：项目信息表可跳过，下一步始终可用
+  const next4 = document.getElementById("btn-next-4");
+  if (next4) next4.disabled = false;
+
+  // 第5步开始生成：输入表齐全
   const gen = document.getElementById("btn-generate");
   if (gen) gen.disabled = !allInputs;
 
@@ -187,7 +230,7 @@ function renderStep4Cards() {
 
 /* ---------- 步骤切换 ---------- */
 function gotoStep(n) {
-  for (let i = 1; i <= 4; i++) {
+  for (let i = 1; i <= 6; i++) {
     document.getElementById("step-" + i).hidden = i !== n;
   }
   document.querySelectorAll(".stepper .step").forEach(el => {
@@ -314,10 +357,7 @@ async function pollRecognition() {
     if (!p.running) {
       renderRecognitionResult(p);
       await renderStatus();
-      // 识别完成后自动弹出人工复核（存在未识别人脸时）
-      if (p.done && p.success && status.review_pending && !reviewHandled) {
-        openReview();
-      }
+      // 复核改为独立第3步，由「开始人工复核」按钮触发
       return;
     }
   }
@@ -362,6 +402,28 @@ function renderNameList() {
     const opt = document.createElement("option");
     opt.value = n;
     dl.appendChild(opt);
+  });
+}
+
+/* 让序号标签可拖动挪开（挡住脸时移开看脸） */
+function makeDraggable(el) {
+  el.addEventListener("mousedown", e => {
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    const origLeft = parseFloat(el.style.left) || 0;
+    const origTop = parseFloat(el.style.top) || 0;
+    el.classList.add("dragging");
+    const onMove = ev => {
+      el.style.left = (origLeft + ev.clientX - startX) + "px";
+      el.style.top = (origTop + ev.clientY - startY) + "px";
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      el.classList.remove("dragging");
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   });
 }
 
@@ -479,15 +541,19 @@ function renderReviewPhoto() {
   img.onload = () => {
     const nw = img.naturalWidth || 1;
     const nh = img.naturalHeight || 1;
+    // 以显示尺寸换算像素坐标（wrap 内图片宽度=100%）
+    const ww = wrap.clientWidth || nw;
+    const wh = wrap.clientHeight || nh;
     (p.unknown_faces || []).forEach((f, i) => {
       if (!f.box || f.box.length < 4) return;
       const [x1, y1, x2, y2] = f.box;
-      // 不画红框（图片小时会遮脸），直接在脸部框正下方（胸口/身体处）标序号
+      // 不画红框（图片小时会遮脸），在脸部框正下方标序号；可拖动挪开看脸
       const num = document.createElement("span");
       num.className = "rv-box-num";
       num.textContent = i + 1;
-      num.style.left = (((x1 + x2) / 2) / nw * 100) + "%";
-      num.style.top = (y2 / nh * 100) + "%";
+      num.style.left = (((x1 + x2) / 2) / nw * ww) + "px";
+      num.style.top = (y2 / nh * wh) + "px";
+      makeDraggable(num);
       wrap.appendChild(num);
     });
   };
@@ -584,7 +650,8 @@ const GEN_SCREENS = [
   { table: "table5", type: "edit", label: "05_该日出工人员表", errorKey: "error1" },
   { table: "table6", type: "edit", label: "06_全体人员出工情况表", errorKey: "error2" },
   { table: "table8_9_10", type: "view", viewKey: "final", title: "最终考勤表（表8/9/10）",
-    hint: "可直接框选表格内容复制到 Excel（合并单元格格式已保留）", withFilters: false },
+    hint: "可直接框选表格内容复制到 Excel（合并单元格格式已保留）；出工情况列可修改并自动保存",
+    withFilters: false, finalMode: true },
 ];
 // 从屏幕 i 推进到 i+1 需要运行的中间表
 const TABLES_BETWEEN_SCREENS = {
@@ -636,7 +703,7 @@ async function startGeneration() {
     if (screen.type === "view") {
       choice = await waitForView(screen.viewKey, screen.title,
         pos === GEN_SCREENS.length - 1 ? "完成" : "继续",
-        screen.hint, pos > 0, !!screen.withFilters);
+        screen.hint, pos > 0, !!screen.withFilters, !!screen.finalMode);
     } else {
       choice = await waitForEdit(screen.table, screen.errorKey, screen.label,
         lastTableInfo[screen.table], pos > 0);
@@ -679,7 +746,7 @@ async function startGeneration() {
   });
   if (allDone) {
     toast("🎉 全部表格生成完成！", "success");
-    gotoStep(4);
+    gotoStep(6);
   }
 }
 
@@ -723,17 +790,24 @@ function enableTableFilters(table) {
 
 let activeFilterMenu = null;
 
+/* 取单元格值：优先取 .cell-val（可编辑格的实际值，排除"待确认"徽标等） */
+function cellVal(cell) {
+  const val = cell.querySelector(".cell-val");
+  return val ? val.textContent.trim() : (cell.textContent || "").trim();
+}
+
 function showFilterMenu(table, ci, btn) {
   closeFilterMenu();
   const menu = document.createElement("div");
   menu.className = "filter-menu";
   const values = new Set();
+  let hasEmpty = false;
   table.querySelectorAll("tbody tr").forEach(tr => {
     const cell = tr.cells[ci];
-    if (cell) {
-      const v = cell.textContent.trim();
-      if (v) values.add(v);
-    }
+    if (!cell) return;
+    const v = cellVal(cell);
+    if (v) values.add(v);
+    else hasEmpty = true;
   });
   const current = btn.dataset.filter || "";
   const add = (label, value) => {
@@ -749,6 +823,7 @@ function showFilterMenu(table, ci, btn) {
     menu.appendChild(item);
   };
   add("（全部）", "");
+  if (hasEmpty) add("（空值）", "__EMPTY__");
   Array.from(values).sort((a, b) => a.localeCompare(b, "zh")).forEach(v => add(v, v));
   document.body.appendChild(menu);
   activeFilterMenu = menu;
@@ -769,8 +844,12 @@ function closeFilterMenu() {
 function applyFilter(table, ci, value) {
   table.querySelectorAll("tbody tr").forEach(tr => {
     const cell = tr.cells[ci];
-    const v = cell ? cell.textContent.trim() : "";
-    tr.style.display = (!value || v === value) ? "" : "none";
+    const v = cell ? cellVal(cell) : "";
+    let show;
+    if (value === "") show = true;                      // 全部
+    else if (value === "__EMPTY__") show = (v === "");  // 空值
+    else show = (v === value);                          // 具体值
+    tr.style.display = show ? "" : "none";
   });
 }
 
@@ -840,7 +919,10 @@ function enableTableResize(table) {
 }
 
 /* ---------- 表格查看 / 可编辑弹窗（表1、05、06、最终表） ---------- */
-function waitForView(key, title, continueText, hint, canBack, withFilters) {
+let viewSearchPos = -1;  // 最终表搜索位置
+let viewCurrentSheet = "";  // 最终表当前子表名
+
+function waitForView(key, title, continueText, hint, canBack, withFilters, finalMode) {
   return new Promise(resolve => {
     const modal = document.getElementById("modal-view");
     document.getElementById("view-title").textContent = title;
@@ -849,6 +931,8 @@ function waitForView(key, title, continueText, hint, canBack, withFilters) {
     else hintEl.hidden = true;
     const body = document.getElementById("view-body");
     const tabs = document.getElementById("view-tabs");
+    const searchBar = document.getElementById("view-search-bar");
+    searchBar.hidden = !finalMode;  // 仅最终考勤表显示搜索/编辑栏
     body.innerHTML = '<div style="padding:20px;color:var(--muted)">加载中…</div>';
     api("/api/view_sheet/" + key).then(res => {
       if (!res.success) {
@@ -856,7 +940,13 @@ function waitForView(key, title, continueText, hint, canBack, withFilters) {
         return;
       }
       const sheets = res.sheets || [];
-      const show = html => { body.innerHTML = html; enhanceTable(body, withFilters); };
+      viewSearchPos = -1;
+      const show = (html, sheetName) => {
+        body.innerHTML = html;
+        enhanceTable(body, withFilters);
+        viewCurrentSheet = sheetName || "";
+        if (finalMode) enableFinalEdit(body);
+      };
       if (sheets.length > 1) {
         tabs.hidden = false;
         tabs.innerHTML = "";
@@ -867,14 +957,14 @@ function waitForView(key, title, continueText, hint, canBack, withFilters) {
           b.onclick = () => {
             tabs.querySelectorAll(".sheet-tab").forEach(x => x.classList.remove("active"));
             b.classList.add("active");
-            show(s.html);
+            show(s.html, s.name);
           };
           tabs.appendChild(b);
         });
-        show(sheets[0].html);
+        show(sheets[0].html, sheets[0].name);
       } else {
         tabs.hidden = true;
-        show(sheets[0] ? sheets[0].html : "");
+        show(sheets[0] ? sheets[0].html : "", sheets[0] ? sheets[0].name : "");
       }
     }).catch(e => {
       body.innerHTML = `<div style="padding:20px;color:var(--danger)">加载失败: ${esc(String(e))}</div>`;
@@ -887,6 +977,66 @@ function waitForView(key, title, continueText, hint, canBack, withFilters) {
     back.onclick = () => { modal.hidden = true; resolve("back"); };
     modal.hidden = false;
   });
+}
+
+/* 最终考勤表：出工情况列可编辑，失焦自动保存 */
+function enableFinalEdit(container) {
+  container.querySelectorAll(".sheet-table").forEach(table => {
+    const headerRow = table.querySelector("thead tr") || table.querySelector("tr:first-child");
+    if (!headerRow) return;
+    let colC = null;
+    Array.from(headerRow.cells).forEach(cell => {
+      if (cell.textContent.includes("出工情况")) {
+        colC = parseInt(cell.getAttribute("data-c"), 10);
+      }
+    });
+    if (!colC) return;
+    table.querySelectorAll("td[data-c]").forEach(cell => {
+      const c = parseInt(cell.getAttribute("data-c"), 10);
+      const r = parseInt(cell.getAttribute("data-r"), 10);
+      if (c !== colC || r <= 1) return;
+      cell.setAttribute("contenteditable", "true");
+      cell.classList.add("final-editable");
+      cell.addEventListener("blur", () => {
+        const val = cell.textContent.trim();
+        api("/api/edit_final_cell", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sheet: viewCurrentSheet, changes: [{ r, c, value: val }] }),
+        }).then(res => {
+          if (res && res.success) toast(res.message || "已保存", "success");
+          else toast((res && res.message) || "保存失败", "error");
+        }).catch(() => toast("保存失败", "error"));
+      });
+    });
+  });
+}
+
+function viewSearchNext() {
+  const find = document.getElementById("vs-find").value;
+  if (!find) { toast("请输入搜索内容", "error"); return; }
+  const cells = Array.from(document.querySelectorAll("#view-body td[data-r], #view-body th[data-r]"));
+  document.querySelectorAll("#view-body .vs-hit").forEach(c => c.classList.remove("vs-hit"));
+  const start = viewSearchPos;
+  for (let i = start + 1; i < cells.length; i++) {
+    if (cells[i].textContent.includes(find)) {
+      viewSearchPos = i;
+      cells[i].classList.add("vs-hit");
+      cells[i].scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+  }
+  for (let i = 0; i <= start; i++) {
+    if (cells[i].textContent.includes(find)) {
+      viewSearchPos = i;
+      cells[i].classList.add("vs-hit");
+      cells[i].scrollIntoView({ block: "center", behavior: "smooth" });
+      toast("已循环到开头", "");
+      return;
+    }
+  }
+  viewSearchPos = -1;
+  toast("未找到匹配", "");
 }
 
 let editState = null;  // 当前可编辑表格的状态
@@ -927,8 +1077,32 @@ function makeGridRow(rowVals, columns, editable, locked, pendingIdx) {
   return tr;
 }
 
+/* 修改开工/收工项目名后，按 000_项目信息表 自动匹配对应的项目简称 */
+async function autoMatchShort(project, targetCell) {
+  if (!project) { targetCell.textContent = ""; return; }
+  try {
+    const res = await api("/api/match_short", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project }),
+    });
+    if (res && res.success && res.short) targetCell.textContent = res.short;
+  } catch (e) { /* 网络失败静默，保持原值 */ }
+}
+
+function wireAutoShort(tbody, nameIdx, shortIdx) {
+  tbody.querySelectorAll("tr").forEach(tr => {
+    const nameCell = tr.cells[nameIdx] ? tr.cells[nameIdx].querySelector(".cell-val") : null;
+    const shortCell = tr.cells[shortIdx] ? tr.cells[shortIdx].querySelector(".cell-val") : null;
+    if (nameCell && shortCell) {
+      nameCell.addEventListener("blur", () => autoMatchShort(nameCell.textContent.trim(), shortCell));
+    }
+  });
+}
+
 function renderEditGrid(data) {
   editState = data;
+  frCurrent = null;  // 表格重建后重置查找位置
   const wrap = document.getElementById("edit-grid-wrap");
   const columns = data.columns || [];
   const editable = new Set(data.editable_idxs || []);
@@ -948,6 +1122,29 @@ function renderEditGrid(data) {
   wrap.innerHTML = "";
   wrap.appendChild(tbl);
   enhanceTable(wrap, true);  // 表头筛选 + 列宽拖拽（行高柄由 makeGridRow 自带）
+
+  // 修改开工/收工项目名后，自动按 000_项目信息表 匹配对应的项目简称
+  const kgIdx = columns.indexOf("开工项目名");
+  const kgShortIdx = columns.indexOf("开工项目简称");
+  const sgIdx = columns.indexOf("收工项目名");
+  const sgShortIdx = columns.indexOf("收工项目简称");
+  if (kgIdx >= 0 && kgShortIdx >= 0) wireAutoShort(tbody, kgIdx, kgShortIdx);
+  if (sgIdx >= 0 && sgShortIdx >= 0) wireAutoShort(tbody, sgIdx, sgShortIdx);
+
+  // 出现在核对信息错误文档中的姓名行 → 高亮底色提示（含1字之差的相近姓名）
+  const hList = data.highlight_names || [];
+  const hSet = new Set(hList);
+  const nameMatches = name => {
+    if (!name || hSet.has(name)) return !!name;
+    return hList.some(h =>
+      h.length === name.length && h.length >= 2 &&
+      [...h].filter((ch, i) => ch !== name[i]).length === 1
+    );
+  };
+  tbody.querySelectorAll("tr").forEach(tr => {
+    const first = tr.cells[0] ? tr.cells[0].textContent.trim() : "";
+    if (nameMatches(first)) tr.classList.add("row-abnormal");
+  });
 
   document.getElementById("edit-tip").textContent =
     pendingIdx >= 0
@@ -975,6 +1172,79 @@ function saveEditGrid(key) {
     toast("保存请求失败: " + e, "error");
     return null;
   }).finally(() => setMask(false));
+}
+
+/* ---------- 查找 / 替换（05/06 编辑表） ---------- */
+let frCurrent = null;  // {cell, pos} 当前查找位置
+
+function _frCells() {
+  return Array.from(document.querySelectorAll("#edit-grid-wrap .cell-val"));
+}
+
+function _frHighlight(cell) {
+  _frCells().forEach(c => c.classList.remove("fr-hit"));
+  cell.classList.add("fr-hit");
+  cell.scrollIntoView({ block: "center", behavior: "smooth" });
+  cell.focus();
+}
+
+function frFindNext() {
+  const find = document.getElementById("fr-find").value;
+  if (!find) { toast("请输入查找内容", "error"); return; }
+  const cells = _frCells();
+  // 1) 同格内继续找
+  if (frCurrent && frCurrent.cell && cells.includes(frCurrent.cell)) {
+    const idx = frCurrent.cell.textContent.indexOf(find, frCurrent.pos + find.length);
+    if (idx >= 0) { frCurrent = { cell: frCurrent.cell, pos: idx }; _frHighlight(frCurrent.cell); return; }
+  }
+  // 2) 后续格
+  const start = frCurrent ? cells.indexOf(frCurrent.cell) + 1 : 0;
+  for (let i = start; i < cells.length; i++) {
+    const idx = cells[i].textContent.indexOf(find);
+    if (idx >= 0) { frCurrent = { cell: cells[i], pos: idx }; _frHighlight(cells[i]); return; }
+  }
+  // 3) 循环到开头
+  for (let i = 0; i < start; i++) {
+    const idx = cells[i].textContent.indexOf(find);
+    if (idx >= 0) { frCurrent = { cell: cells[i], pos: idx }; _frHighlight(cells[i]); toast("已循环到开头", ""); return; }
+  }
+  frCurrent = null;
+  toast("未找到匹配", "");
+}
+
+function frReplaceOne() {
+  const find = document.getElementById("fr-find").value;
+  const repl = document.getElementById("fr-replace").value;
+  if (!find) { toast("请输入查找内容", "error"); return; }
+  if (!frCurrent || !frCurrent.cell) { toast("请先点「查找下一个」", "error"); return; }
+  const cell = frCurrent.cell;
+  const text = cell.textContent;
+  if (frCurrent.pos >= 0 && text.startsWith(find, frCurrent.pos)) {
+    cell.textContent = text.slice(0, frCurrent.pos) + repl + text.slice(frCurrent.pos + find.length);
+    frCurrent = { cell, pos: frCurrent.pos + repl.length };
+    _frHighlight(cell);
+    toast("已替换", "success");
+  } else {
+    toast("当前内容已变化，请重新查找", "error");
+    frCurrent = null;
+  }
+}
+
+function frReplaceAll() {
+  const find = document.getElementById("fr-find").value;
+  const repl = document.getElementById("fr-replace").value;
+  if (!find) { toast("请输入查找内容", "error"); return; }
+  let count = 0;
+  _frCells().forEach(cell => {
+    const parts = cell.textContent.split(find);
+    if (parts.length > 1) {
+      cell.textContent = parts.join(repl);
+      count += parts.length - 1;
+    }
+  });
+  frCurrent = null;
+  _frCells().forEach(c => c.classList.remove("fr-hit"));
+  toast(count > 0 ? `已替换 ${count} 处` : "未找到可替换内容", count > 0 ? "success" : "");
 }
 
 function waitForEdit(key, errorKey, label, tableInfo, canBack) {
@@ -1054,6 +1324,173 @@ function addGridRow() {
   tbody.appendChild(row);
 }
 
+/* ---------- 生成 000_项目信息表 ---------- */
+async function startProjinfoGen() {
+  const genBtn = document.getElementById("btn-projinfo-gen");
+  genBtn.disabled = true;
+  setMask(true, "正在分析周安排表…");
+  let plan;
+  try {
+    const res = await api("/api/projinfo/plan", { method: "POST" });
+    if (!res.success) { toast(res.message || "生成失败", "error"); return; }
+    plan = res;
+  } catch (e) {
+    toast("请求失败: " + e, "error");
+    return;
+  } finally {
+    setMask(false);
+    genBtn.disabled = false;
+  }
+  let selections = {};
+  if (plan.review && plan.review.length) {
+    selections = await showProjinfoModal(plan);
+    if (!selections) return;  // 用户取消
+  }
+  await confirmProjinfo(selections);
+}
+
+async function confirmProjinfo(selections) {
+  setMask(true, "正在生成 000_项目信息表…");
+  try {
+    const res = await api("/api/projinfo/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selections: selections || {} }),
+    });
+    if (res.success) toast(res.message || "已生成", "success");
+    else toast(res.message || "生成失败", "error");
+  } catch (e) {
+    toast("请求失败: " + e, "error");
+  } finally {
+    setMask(false);
+    await renderStatus();
+  }
+}
+
+function showProjinfoModal(plan) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("modal-projinfo");
+    document.getElementById("pi-period").textContent =
+      `日期范围：${plan.period} ｜ 自动 ${(plan.auto || []).length} 项，待确认 ${(plan.review || []).length} 项`;
+    document.getElementById("pi-hint").textContent =
+      "请逐条确认「出勤统计简称」与「工作安排简称」（可直接选或手动改）；「新增行」表示在 04 中无匹配，将按建议新增到 000。";
+    const wrap = document.getElementById("pi-grid-wrap");
+    const reviews = plan.review || [];
+
+    const tbl = document.createElement("table");
+    tbl.className = "sheet-table";
+    tbl.innerHTML = `<thead><tr>
+      <th>06项目名称</th><th>工作安排简称</th><th>出勤统计简称</th><th>输出项目名称</th><th>说明</th>
+    </tr></thead>`;
+    const tbody = document.createElement("tbody");
+    const modeLabel = { fuzzy: "相近匹配", none: "无直接匹配", new: "新增行" };
+
+    reviews.forEach(r => {
+      const tr = document.createElement("tr");
+      const mkTd = txt => { const td = document.createElement("td"); td.textContent = txt || ""; return td; };
+      tr.appendChild(mkTd(r.项目名称));
+      const wsTd = document.createElement("td");
+      const wsIn = document.createElement("input");
+      wsIn.className = "pi-input";
+      wsIn.value = r.work_short || "";
+      wsIn.dataset.rid = r.rid;
+      wsIn.dataset.field = "work_short";
+      wsIn.setAttribute("list", "pi-work-short-list");
+      wsTd.appendChild(wsIn);
+      tr.appendChild(wsTd);
+      const ssTd = document.createElement("td");
+      const ssIn = document.createElement("input");
+      ssIn.className = "pi-input";
+      ssIn.value = r.attendance_short || "";
+      ssIn.dataset.rid = r.rid;
+      ssIn.dataset.field = "attendance_short";
+      ssIn.setAttribute("list", "pi-short-list");
+      ssTd.appendChild(ssIn);
+      tr.appendChild(ssTd);
+      const pnTd = document.createElement("td");
+      const pnIn = document.createElement("input");
+      pnIn.className = "pi-input";
+      // 输出项目名称：相近/直接匹配 → 04 原有项目名；无匹配/新增 → 建议的新名
+      pnIn.value = r.suggest_name || r.项目名称 || "";
+      pnIn.dataset.rid = r.rid;
+      pnIn.dataset.field = "project_name";
+      pnTd.appendChild(pnIn);
+      tr.appendChild(pnTd);
+      // 说明列：模式标签 + 悬停备注（原因）
+      const tipTd = document.createElement("td");
+      tipTd.textContent = modeLabel[r.mode] || r.mode;
+      if (r.reason) {
+        const tip = document.createElement("span");
+        tip.className = "tip-icon";
+        tip.setAttribute("data-tip", r.reason);
+        tip.textContent = "  ⓘ";
+        tipTd.appendChild(tip);
+      }
+      tr.appendChild(tipTd);
+      tbody.appendChild(tr);
+    });
+
+    // 自动匹配项追加在底部（只读，供一起查看）
+    const autos = plan.auto || [];
+    if (autos.length) {
+      const sep = document.createElement("tr");
+      sep.className = "pi-auto-sep";
+      const sepTd = document.createElement("td");
+      sepTd.colSpan = 5;
+      sepTd.textContent = `✅ 自动匹配项（无需确认，共 ${autos.length} 项）`;
+      sep.appendChild(sepTd);
+      tbody.appendChild(sep);
+      autos.forEach(a => {
+        const tr = document.createElement("tr");
+        tr.className = "pi-auto-row";
+        const mkTd = txt => { const td = document.createElement("td"); td.textContent = txt || ""; return td; };
+        tr.appendChild(mkTd(a.项目名称));
+        tr.appendChild(mkTd(a.工作安排简称));
+        tr.appendChild(mkTd(a.出勤统计简称));
+        tr.appendChild(mkTd(a.项目名称));
+        tr.appendChild(mkTd("自动匹配"));
+        tbody.appendChild(tr);
+      });
+    }
+
+    tbl.appendChild(tbody);
+    wrap.innerHTML = "";
+    wrap.appendChild(tbl);
+
+    // datalist 候选
+    const buildList = (id, values) => {
+      let dl = document.getElementById(id);
+      if (!dl) { dl = document.createElement("datalist"); dl.id = id; document.body.appendChild(dl); }
+      dl.innerHTML = "";
+      const seen = new Set();
+      (values || []).forEach(v => { if (!seen.has(v)) { seen.add(v); const o = document.createElement("option"); o.value = v; dl.appendChild(o); } });
+    };
+    const wsVals = [], ssVals = [];
+    reviews.forEach(r => {
+      (r.work_short_options || []).forEach(v => wsVals.push(v));
+      (r.short_options || []).forEach(v => ssVals.push(v));
+    });
+    buildList("pi-work-short-list", wsVals);
+    buildList("pi-short-list", ssVals);
+
+    const confirmBtn = document.getElementById("btn-pi-confirm");
+    const cancelBtn = document.getElementById("btn-pi-cancel");
+    function cleanup() { modal.hidden = true; confirmBtn.onclick = cancelBtn.onclick = null; }
+    confirmBtn.onclick = () => {
+      const selections = {};
+      wrap.querySelectorAll(".pi-input").forEach(inp => {
+        const rid = inp.dataset.rid, field = inp.dataset.field;
+        if (!selections[rid]) selections[rid] = {};
+        selections[rid][field] = inp.value.trim();
+      });
+      cleanup();
+      resolve(selections);
+    };
+    cancelBtn.onclick = () => { cleanup(); resolve(null); };
+    modal.hidden = false;
+  });
+}
+
 /* ---------- 下载 ---------- */
 function initDownloads() {
   document.querySelectorAll(".js-download").forEach(btn => {
@@ -1103,9 +1540,13 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-recognize").addEventListener("click", startRecognition);
   document.getElementById("btn-refresh").addEventListener("click", renderStatus);
   document.getElementById("btn-generate").addEventListener("click", startGeneration);
-  document.getElementById("btn-skip-final").addEventListener("click", () => gotoStep(4));
+  document.getElementById("btn-skip-final").addEventListener("click", () => gotoStep(6));
   document.getElementById("btn-next-1").addEventListener("click", () => gotoStep(2));
   document.getElementById("btn-next-2").addEventListener("click", () => gotoStep(3));
+  document.getElementById("btn-next-3").addEventListener("click", () => gotoStep(4));
+  document.getElementById("btn-next-4").addEventListener("click", () => gotoStep(5));
+  document.getElementById("btn-projinfo-gen").addEventListener("click", startProjinfoGen);
+  document.getElementById("btn-projinfo-status").addEventListener("click", renderStatus);
 
   document.getElementById("btn-review-start").addEventListener("click", openReview);
   document.getElementById("btn-review-skip-all").addEventListener("click", skipAllReview);
@@ -1113,6 +1554,15 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-rv-skip").addEventListener("click", skipReviewPhoto);
 
   document.getElementById("btn-grid-add").addEventListener("click", addGridRow);
+
+  document.getElementById("fr-next").addEventListener("click", frFindNext);
+  document.getElementById("fr-replace-one").addEventListener("click", frReplaceOne);
+  document.getElementById("fr-replace-all").addEventListener("click", frReplaceAll);
+  document.getElementById("fr-find").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); frFindNext(); } });
+  document.getElementById("fr-replace").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); frReplaceOne(); } });
+
+  document.getElementById("vs-next").addEventListener("click", viewSearchNext);
+  document.getElementById("vs-find").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); viewSearchNext(); } });
 
   renderStatus();
   setInterval(renderStatus, 15000); // 周期刷新
