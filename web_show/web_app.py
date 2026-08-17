@@ -48,6 +48,7 @@ from face_app.generate_table import (  # 表格输出路径的单一数据源
     TABLE5_FILE, TABLE5_ERROR_FILE, TABLE6_FILE, TABLE6_ERROR_FILE,
     TABLE7_FILE, PHOTO_LEDGER_FILE, PROJECT_INFO_FILE, HEADER_ROW,
     parse_filename, parse_people, build_project_mapping, normalize,
+    NO_FACE_CONFIRMED,
 )
 from face_app.project_info import (  # 生成 000_项目信息表 / 0000_更新表
     generate_plan as gen_projinfo_plan,
@@ -513,9 +514,10 @@ def _review_meta():
     """从 00_ 廉价统计复核信息（只读表格，不加载人脸模型）。
 
     返回 {"review_pending", "review_photos", "no_face_photos"}：
-      review_pending  是否有照片含未识别(Unknown)的人脸，需要人工复核
+      review_pending  是否有照片需要人工复核
+                     （含未识别(Unknown)的人脸，或未确认过是否有人脸的"未检测到人脸"照片）
       review_photos   含未识别人脸的照片数
-      no_face_photos  完全未检测到人脸的照片数（不纳入复核，仅提示）
+      no_face_photos  未检测到人脸、且尚未人工确认的照片数（同样纳入复核弹窗）
     """
     meta = {"review_pending": False, "review_photos": 0, "no_face_photos": 0}
     if not RESULT_FILE.exists():
@@ -524,8 +526,9 @@ def _review_meta():
         df = pd.read_excel(RESULT_FILE)
         names = df["识别人名"].fillna("").astype(str)
         meta["review_photos"] = len(df.loc[names == "Unknown", "被识别图像名称"].unique())
+        # 已人工确认"确实无人脸"的照片写的是 NO_FACE_CONFIRMED，不再计入待确认
         meta["no_face_photos"] = len(df.loc[names == "未检测到人脸", "被识别图像名称"].unique())
-        meta["review_pending"] = meta["review_photos"] > 0
+        meta["review_pending"] = meta["review_photos"] > 0 or meta["no_face_photos"] > 0
     except Exception:
         pass
     return meta
@@ -718,8 +721,11 @@ def _build_review_data(progress_cb=None, cancel_cb=None):
     df["识别人名"] = df["识别人名"].fillna("").astype(str)
     df["人脸"] = df["人脸"].map(_normalize_face_seq)
 
-    no_face_photos = df.loc[df["识别人名"] == "未检测到人脸", "被识别图像名称"].unique()
-    pending_photos = sorted(df.loc[df["识别人名"] == "Unknown", "被识别图像名称"].unique())
+    # 复核对象 = 含未识别人脸的照片 + 未检测到人脸（尚未人工确认）的照片
+    # 后者的"未检测到人脸"往往是多人合照/远景被 640 分辨率漏检，需重新补检并让用户确认
+    no_face_set = set(df.loc[df["识别人名"] == "未检测到人脸", "被识别图像名称"].unique())
+    pending_set = set(df.loc[df["识别人名"] == "Unknown", "被识别图像名称"].unique())
+    all_photos = sorted(pending_set | no_face_set)
 
     # 读取照片台账表，建立 (拍摄人, 拍摄时间) → 人员名单 索引（用于显示照片人员名单）
     if progress_cb:
@@ -739,7 +745,7 @@ def _build_review_data(progress_cb=None, cancel_cb=None):
         ledger_loaded = False
 
     # 惰性加载模型 + 人脸库（复用缓存向量）
-    from face_app.face_engine import match_face
+    from face_app.face_engine import match_face, detect_faces
     from face_app.utils import imread_unicode
 
     if progress_cb:
@@ -751,14 +757,16 @@ def _build_review_data(progress_cb=None, cancel_cb=None):
     known_names = sorted(face_db.keys())
 
     photos = []
-    total = len(pending_photos)
-    for idx, photo in enumerate(pending_photos, 1):
+    total = len(all_photos)
+    for idx, photo in enumerate(all_photos, 1):
         if cancel_cb and cancel_cb():
             raise ReviewCancelled()
         if progress_cb:
             progress_cb(f"正在检测照片 {idx}/{total}…")
         rows = df[df["被识别图像名称"] == photo].reset_index(drop=True)
         reporter, photo_time, _ = parse_filename(photo)
+        # 照片类型：unknown = 00_ 里有未识别人脸；no_face = 00_ 判定未检测到人脸
+        kind = "unknown" if photo in pending_set else "no_face"
         recognized_names = sorted({
             r for r in rows["识别人名"]
             if r and r not in ("Unknown", "未检测到人脸")
@@ -772,7 +780,9 @@ def _build_review_data(progress_cb=None, cancel_cb=None):
         elif not person_list:
             list_warning = "未在照片台账表匹配到该照片的人员名单"
 
-        unknown_faces = []
+        unknown_faces = []   # 需人工命名的未识别人脸 [{seq, box, score}]
+        all_faces = []       # 重新补检出的全部人脸 [{seq, box, score, name}]（no_face 照片写回用）
+        faces_found = False
         warning = ""
         img_path = TARGET_DIR / photo
         if not img_path.exists():
@@ -782,19 +792,40 @@ def _build_review_data(progress_cb=None, cancel_cb=None):
             if img is None:
                 warning = "无法读取原图"
             else:
-                faces = app_.get(img)
-                if len(faces) != len(rows):
-                    warning = f"重新检测出 {len(faces)} 张脸，与识别记录 {len(rows)} 条不一致"
-                else:
+                faces = detect_faces(app_, img)  # 大图多人时自动提高分辨率补检小脸
+                faces_found = len(faces) > 0
+                if kind == "unknown":
+                    if len(faces) != len(rows):
+                        warning = f"重新检测出 {len(faces)} 张脸，与识别记录 {len(rows)} 条不一致，请人工确认"
+                    else:
+                        for i, face in enumerate(faces):
+                            name, score = match_face(face.normed_embedding, face_db, THRESHOLD)
+                            if name != "Unknown":
+                                continue
+                            unknown_faces.append({
+                                "seq": rows.at[i, "人脸"],  # 与 00_ 行对应，用于写回
+                                "box": [int(v) for v in face.bbox],
+                                "score": round(float(score), 4),  # float32 → Python float，否则 JSON 序列化失败
+                            })
+                else:  # no_face：重新补检，补检到的人脸重新编号（写回时整行重建）
                     for i, face in enumerate(faces):
                         name, score = match_face(face.normed_embedding, face_db, THRESHOLD)
-                        if name != "Unknown":
-                            continue
-                        unknown_faces.append({
-                            "seq": rows.at[i, "人脸"],  # 与 00_ 行对应，用于写回
+                        seq = f"人脸{i + 1}"
+                        all_faces.append({
+                            "seq": seq,
                             "box": [int(v) for v in face.bbox],
-                            "score": round(float(score), 4),  # float32 → Python float，否则 JSON 序列化失败
+                            "score": round(float(score), 4),
+                            "name": name,
                         })
+                        if name == "Unknown":
+                            unknown_faces.append({
+                                "seq": seq,
+                                "box": [int(v) for v in face.bbox],
+                                "score": round(float(score), 4),
+                            })
+                    if not faces_found:
+                        warning = "重新补检仍未检测到人脸：可确认照片确实无人脸，或手动填写照片中人员姓名"
+                recognized_names = sorted(set(recognized_names) | {f["name"] for f in all_faces if f["name"] != "Unknown"})
 
         # 差异提示（拍照人无法上镜，出现在名单但未被识别不算异常，故排除）
         diff_report_not_recognized = [
@@ -805,11 +836,14 @@ def _build_review_data(progress_cb=None, cancel_cb=None):
 
         photos.append({
             "photo": photo,
+            "kind": kind,                   # "unknown" | "no_face"
             "reporter": reporter,           # 拍照人（用于排除判断，不判异常）
             "person_list": person_list,     # 照片人员名单（来自台账表）
             "list_warning": list_warning,
             "recognized_names": recognized_names,
             "unknown_faces": unknown_faces,
+            "all_faces": all_faces,         # no_face 照片补检出的全部人脸（含自动识别结果）
+            "manual_only": kind == "no_face" and not faces_found,  # 无框可框选，需手动填写
             "warning": warning,
             "diffs": {
                 "report_not_recognized": diff_report_not_recognized,
@@ -820,7 +854,7 @@ def _build_review_data(progress_cb=None, cancel_cb=None):
     return {
         "needs_review": len(photos) > 0,
         "photos": photos,
-        "no_face_photos": len(no_face_photos),
+        "no_face_photos": len(no_face_set),
         "known_names": known_names,
     }
 
@@ -866,17 +900,9 @@ def review_submit():
     body = request.get_json(silent=True) or {}
     photo = str(body.get("photo", "")).strip()
     corrections = body.get("corrections") or []
+    rows_payload = body.get("rows") or []  # no_face 照片：补检/手填的完整人脸名单 [{seq,name}]
     if not photo or not RESULT_FILE.exists():
         return jsonify({"success": False, "message": "参数缺失或 00_ 不存在"}), 400
-
-    cleaned = []
-    for c in corrections:
-        seq = _normalize_face_seq(c.get("seq"))
-        name = str(c.get("name", "")).strip()
-        if name:
-            cleaned.append({"seq": seq, "name": name})
-    if not cleaned:
-        return jsonify({"success": True, "updated": 0, "message": "未填写任何姓名"})
 
     with RUN_LOCK:
         try:
@@ -886,16 +912,58 @@ def review_submit():
             df["被识别图像名称"] = df["被识别图像名称"].fillna("").astype(str)
             df["识别人名"] = df["识别人名"].fillna("").astype(str)
             df["人脸"] = df["人脸"].map(_normalize_face_seq)
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            updated = 0
-            for c in cleaned:
-                mask = (df["被识别图像名称"] == photo) & (df["人脸"] == c["seq"])
-                if mask.any():
-                    df.loc[mask, "识别人名"] = c["name"]
-                    df.loc[mask, "状态"] = "已识别"
-                    df.loc[mask, "修正来源"] = "人工"
-                    updated += int(mask.sum())
-            if updated > 0:  # 只有实际改到行才写回文件，避免空写
+            photo_mask = df["被识别图像名称"] == photo
+            is_no_face = bool(
+                (df.loc[photo_mask, "识别人名"].isin(["未检测到人脸", NO_FACE_CONFIRMED])).any()
+            )
+
+            if is_no_face:
+                # ── 无人脸照片：整行重建 ──
+                # 用户填了姓名 → 按人脸逐个写成识别行；没填 → 确认为"确实无人脸"，写标记行
+                entries = []
+                for r in rows_payload:
+                    seq = _normalize_face_seq(r.get("seq"))
+                    name = str(r.get("name", "")).strip()
+                    if name and name != NO_FACE_CONFIRMED:
+                        entries.append((seq, name))
+                df = df[~photo_mask]  # 删除原"未检测到人脸"记录
+                new_rows = []
+                if not entries:
+                    new_rows.append({
+                        "被识别图像名称": photo, "人脸": "", "识别人名": NO_FACE_CONFIRMED,
+                        "相似度": 1.0, "状态": "已确认无人脸", "时间": now, "修正来源": "人工",
+                    })
+                else:
+                    for i, (seq, name) in enumerate(entries):
+                        if not seq:
+                            seq = f"人脸{i + 1}"  # 手填（无框）的人脸按顺序编号
+                        new_rows.append({
+                            "被识别图像名称": photo, "人脸": seq, "识别人名": name,
+                            "相似度": 1.0, "状态": "已识别", "时间": now, "修正来源": "人工",
+                        })
+                df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                updated = len(entries)
+            else:
+                # ── 含未识别人脸的照片：按 人脸 序号修正对应行 ──
+                cleaned = []
+                for c in corrections:
+                    seq = _normalize_face_seq(c.get("seq"))
+                    name = str(c.get("name", "")).strip()
+                    if name:
+                        cleaned.append({"seq": seq, "name": name})
+                updated = 0
+                for c in cleaned:
+                    mask = photo_mask & (df["人脸"] == c["seq"])
+                    if mask.any():
+                        df.loc[mask, "识别人名"] = c["name"]
+                        df.loc[mask, "状态"] = "已识别"
+                        df.loc[mask, "修正来源"] = "人工"
+                        updated += int(mask.sum())
+                if updated == 0 and not cleaned:
+                    return jsonify({"success": True, "updated": 0, "message": "未填写任何姓名"})
+            if len(df) > 0:
                 df.to_excel(RESULT_FILE, index=False)
         except Exception:
             return jsonify({
@@ -906,11 +974,14 @@ def review_submit():
     # 缓存里的复核数据就地移除该照片，保持新鲜，无需重新检测
     review_runner.update_after_submit(photo)
 
-    return jsonify({
-        "success": True,
-        "updated": updated,
-        "message": f"已更新 {updated} 条识别记录" if updated else "未填写姓名，已跳过本张",
-    })
+    if is_no_face:
+        if updated:
+            msg = f"已记录 {updated} 位人员"
+        else:
+            msg = "已确认照片中确实无人脸，下次复核不再弹出"
+    else:
+        msg = f"已更新 {updated} 条识别记录" if updated else "未填写姓名，已跳过本张"
+    return jsonify({"success": True, "updated": updated, "message": msg})
 
 
 @app.route("/api/target_image/<name>")

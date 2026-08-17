@@ -31,9 +31,79 @@ def init_face_app(providers=None):
         providers = ["CPUExecutionProvider"]
     print(f"正在加载 InsightFace 模型... (providers: {providers})")
     app = FaceAnalysis(name=MODEL_NAME, providers=providers, root=MODEL_ROOT)
-    app.prepare(ctx_id=0, det_size=(640, 640))
+    app.prepare(ctx_id=0, det_size=DEFAULT_DET_SIZE)
     print(f"模型加载完成！检测阈值: {app.det_thresh}")
     return app
+
+
+# ============================================================
+# 稳健人脸检测
+# ============================================================
+# 默认检测分辨率 640（单人/小图快）；大图多人时把长边压到 640 会漏检远/小脸，
+# 若一张脸都没检测到，就逐级提高到 1280/1920 重新检测（多人合照小脸补漏）。
+DEFAULT_DET_SIZE = (640, 640)
+ESCALATION_DET_SIZES = (1280, 1920)
+
+
+def _set_det_size(app, det_size):
+    """调整共享人脸模型的检测分辨率（仅改检测器输入尺寸，不重载权重）。"""
+    app.prepare(
+        ctx_id=0,
+        det_thresh=getattr(app, "det_thresh", 0.5),
+        det_size=det_size,
+    )
+
+
+def _bbox_iou(a, b):
+    """两个检测框的 IoU（a/b 为 [x1,y1,x2,y2] 数组）。"""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    ax1, ay1, ax2, ay2 = a[:4]
+    bx1, by1, bx2, by2 = b[:4]
+    iw = min(ax2, bx2) - max(ax1, bx1)
+    ih = min(ay2, by2) - max(ay1, by1)
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    inter = iw * ih
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    return inter / (area_a + area_b - inter)
+
+
+def _merge_faces(acc, new_faces, iou_thresh=0.4):
+    """合并两次（不同分辨率）检测的结果：与已有框重叠的只保留，新框追加。"""
+    merged = list(acc)
+    for nf in new_faces:
+        if not any(_bbox_iou(nf.bbox, mf.bbox) > iou_thresh for mf in merged):
+            merged.append(nf)
+    return merged
+
+
+def detect_faces(app, img, escalation=True):
+    """
+    稳健人脸检测：先按当前 det_size 检测；若一张脸都没检测到且原图较大
+    （说明被默认 640 分辨率压缩后远/小脸漏检），逐级提高分辨率重检，
+    并把各分辨率检测到的人脸合并去重——不同分辨率能检出的脸可能不同。
+
+    返回人脸列表（bbox 均在原图坐标系）。调用方应持有模型锁，避免与其他
+    推理线程并发变更共享模型。结束后始终把检测分辨率还原为默认值。
+    """
+    faces = app.get(img)
+    if faces or not escalation:
+        return faces
+    h, w = img.shape[:2]
+    if max(h, w) <= DEFAULT_DET_SIZE[0]:
+        return faces  # 原图本就不大，提高分辨率无意义
+    try:
+        for ds in ESCALATION_DET_SIZES:
+            if ds <= max(h, w):
+                _set_det_size(app, (ds, ds))
+                batch = app.get(img)
+                if batch:
+                    faces = _merge_faces(faces, batch)
+    finally:
+        _set_det_size(app, DEFAULT_DET_SIZE)
+    return faces
 
 
 # ============================================================
@@ -255,7 +325,7 @@ def recognize_faces(
             print(f"⚠️ 无法读取: {img_path.name}，跳过")
             continue
 
-        faces = app.get(img)
+        faces = detect_faces(app, img)
         if len(faces) == 0:
             print(f"⚠️ 未检测到人脸: {img_path.name}")
             results.append({

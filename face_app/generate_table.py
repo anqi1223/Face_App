@@ -80,6 +80,8 @@ STATUS_ROWS = {
 # --- 表3 ---
 ATTENDANCE_FILE = OUTPUT_DIR / "00_程序人脸识别结果.xlsx"
 TABLE3_FILE = OUTPUT_DIR / "03_出工照片人脸识别结果表.xlsx"
+# 人工复核时确认"照片确实无人脸"写入 00_ 的标记值（与 Unknown/未检测到人脸 一样不当作出工人）
+NO_FACE_CONFIRMED = "无人脸(人工确认)"
 
 # --- 表4 ---
 TABLE4_FILE = OUTPUT_DIR / "04_出工照片识别出工人表.xlsx"
@@ -660,7 +662,7 @@ def get_table4():
             person_records[photo_person]["photographers"].append(photo_person)
 
         # b. 识别结果中已识别的人
-        if result not in ("Unknown", "未检测到人脸", "", "nan"):
+        if result not in ("Unknown", "未检测到人脸", NO_FACE_CONFIRMED, "", "nan"):
             person_records.setdefault(result, {"times": [], "photographers": []})
             if photo_time not in person_records[result]["times"]:
                 person_records[result]["times"].append(photo_time)

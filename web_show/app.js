@@ -98,7 +98,7 @@ function renderReviewPanel() {
   if (!status.review_pending) return;
   const parts = [`有 <b>${status.review_photos || 0}</b> 张照片含未识别人员，需人工复核修正`];
   if (status.no_face_photos > 0) {
-    parts.push(`另有 <b>${status.no_face_photos}</b> 张照片未检测到人脸（不纳入复核，请另行核实）`);
+    parts.push(`另有 <b>${status.no_face_photos}</b> 张照片未检测到人脸，会一并弹出供您确认是否真的无人`);
   }
   document.getElementById("review-summary").innerHTML = parts.join("；");
 }
@@ -491,8 +491,17 @@ function renderReviewPhoto() {
   document.getElementById("rv-sub").textContent = p.photo;
 
   const warn = document.getElementById("rv-warning");
-  if (p.warning) {
-    warn.textContent = "⚠️ " + p.warning;
+  const warnParts = [];
+  if (p.kind === "no_face") {
+    if (p.manual_only) {
+      warnParts.push("程序未检测到人脸、重新补检也未找到，请人工确认照片是否真的无人；若有人，请在下方填写姓名");
+    } else {
+      warnParts.push(`程序原先判定该照片未检测到人脸，重新补检已找到 ${(p.unknown_faces || []).length} 张人脸，请核对并补全姓名`);
+    }
+  }
+  if (p.warning) warnParts.push(p.warning);
+  if (warnParts.length) {
+    warn.textContent = "⚠️ " + warnParts.join("；");
     warn.hidden = false;
   } else {
     warn.hidden = true;
@@ -560,10 +569,20 @@ function renderReviewPhoto() {
   img.src = "/api/target_image/" + encodeURIComponent(p.photo);
   wrap.appendChild(img);
 
-  // 姓名输入框：有几个人未识别就给几个框
+  // 姓名输入区：无人脸照片（补检也没框到）→ 手动填写；有未识别人脸 → 逐脸输入
   const inputsEl = document.getElementById("rv-inputs");
   inputsEl.innerHTML = "";
-  if (!(p.unknown_faces || []).length) {
+  if (p.manual_only) {
+    const ta = document.createElement("textarea");
+    ta.className = "rv-manual-area";
+    ta.placeholder = "在此填写照片中的实际人员姓名，多个姓名用顿号、逗号或换行分隔…";
+    inputsEl.appendChild(ta);
+    const hint = document.createElement("div");
+    hint.className = "rv-manual-hint";
+    hint.textContent = "填写后点「确认本张」保存；若照片确实无人，直接点「确认本张」即可（后续不再弹出）。";
+    inputsEl.appendChild(hint);
+    ta.focus();
+  } else if (!(p.unknown_faces || []).length) {
     inputsEl.innerHTML = `<div class="rv-empty">该照片没有可框选的未识别人脸${p.warning ? `（${esc(p.warning)}）` : ""}</div>`;
   } else {
     (p.unknown_faces || []).forEach((f, i) => {
@@ -591,21 +610,43 @@ function renderReviewPhoto() {
 async function confirmReviewPhoto() {
   const p = reviewPhotos[reviewIdx];
   if (!p) return;
-  const corrections = [];
-  document.querySelectorAll("#rv-inputs .rv-name-input").forEach(inp => {
-    const name = inp.value.trim();
-    if (name) corrections.push({ seq: inp.dataset.seq || "", name });
-  });
+  let payload;
+  if (p.kind === "no_face") {
+    // 无人脸照片：整张重建（补检到的人脸全部记录；或手动填写的姓名；都不填 = 确认无人）
+    let rows = [];
+    if (p.manual_only) {
+      const ta = document.querySelector("#rv-inputs .rv-manual-area");
+      const raw = ta ? ta.value : "";
+      rows = raw.split(/[、，,;；\n]+/)
+        .map(s => s.trim()).filter(Boolean)
+        .map(name => ({ seq: "", name }));
+    } else {
+      rows = (p.all_faces || []).map(f => {
+        const input = document.querySelector(
+          `#rv-inputs .rv-name-input[data-seq="${CSS.escape(f.seq)}"]`);
+        const typed = input ? input.value.trim() : "";
+        return { seq: f.seq, name: typed || f.name || "Unknown" };
+      });
+    }
+    payload = { photo: p.photo, kind: "no_face", rows };
+  } else {
+    const corrections = [];
+    document.querySelectorAll("#rv-inputs .rv-name-input").forEach(inp => {
+      const name = inp.value.trim();
+      if (name) corrections.push({ seq: inp.dataset.seq || "", name });
+    });
+    payload = { photo: p.photo, kind: "unknown", corrections };
+  }
   setMask(true, "正在写入识别结果…");
   try {
     const res = await api("/api/review_submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ photo: p.photo, corrections }),
+      body: JSON.stringify(payload),
     });
     if (res.success) {
-      if (res.updated > 0) toast(`已更新 ${res.updated} 条识别记录`, "success");
-      else toast("未填写姓名，已跳过本张", "");
+      toast(res.message || (res.updated > 0 ? `已更新 ${res.updated} 条识别记录` : "已跳过本张"),
+            res.updated > 0 ? "success" : "");
       reviewPhotos.splice(reviewIdx, 1);  // 本张处理完，进入下一张
       renderReviewPhoto();
     } else {
