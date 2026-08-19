@@ -48,6 +48,7 @@ from face_app.generate_table import (  # 表格输出路径的单一数据源
     TABLE5_FILE, TABLE5_ERROR_FILE, TABLE6_FILE, TABLE6_ERROR_FILE,
     TABLE7_FILE, PHOTO_LEDGER_FILE, PROJECT_INFO_FILE, HEADER_ROW,
     parse_filename, parse_people, build_project_mapping, normalize,
+    match_project, _find_canonical_project,
     NO_FACE_CONFIRMED,
 )
 from face_app.project_info import (  # 生成 000_项目信息表 / 0000_更新表
@@ -1325,6 +1326,69 @@ def edit_save(key):
     })
 
 
+@app.route("/api/edit_refresh/<key>", methods=["POST"])
+def edit_refresh(key):
+    """06 编辑表：按当前网格中的开工/收工项目名，重新匹配 000_项目信息表，
+    刷新「开工/收工项目简称」与「备注」列（与 get_table6 的匹配逻辑一致）。"""
+    if key not in EDIT_TABLES:
+        return jsonify({"success": False, "message": "未知编辑表"}), 404
+    if key != "table6":
+        return jsonify({"success": False, "message": "仅表6支持项目简称刷新"}), 400
+    body = request.get_json(silent=True) or {}
+    columns = body.get("columns") or []
+    rows = body.get("rows") or []
+    if not columns or not isinstance(rows, list):
+        return jsonify({"success": False, "message": "参数错误"}), 400
+
+    def col(name):
+        return columns.index(name) if name in columns else -1
+
+    kg_idx, sg_idx = col("开工项目名"), col("收工项目名")
+    kg_s_idx, sg_s_idx = col("开工项目简称"), col("收工项目简称")
+    rm_idx = col("备注")
+    if kg_idx < 0 or sg_idx < 0:
+        return jsonify({"success": False, "message": "表格缺少开工/收工项目名列"}), 400
+
+    # 与 get_table6 一致：先用表2规范项目名做实质匹配，再查 000_项目信息表得简称
+    canonical_projects = []
+    _seen = set()
+    try:
+        if TABLE2_FILE.exists():
+            _df2 = pd.read_excel(TABLE2_FILE)
+            for _p in _df2.get("项目", []):
+                _s = str(_p or "").strip()
+                if _s and _s not in _seen:
+                    _seen.add(_s)
+                    canonical_projects.append(_s)
+    except Exception:
+        canonical_projects = []
+    exact_lookup, all_entries, name_entries = build_project_mapping()
+
+    changed = 0
+    for r in rows:
+        kg = str(r[kg_idx]).strip() if kg_idx < len(r) else ""
+        sg = str(r[sg_idx]).strip() if sg_idx < len(r) else ""
+        kg_clean = _find_canonical_project(kg, canonical_projects)
+        sg_clean = _find_canonical_project(sg, canonical_projects)
+        kg_short, _, kg_remark = match_project(kg_clean, "开工项目名", exact_lookup, all_entries, name_entries)
+        sg_short, _, sg_remark = match_project(sg_clean, "收工项目名", exact_lookup, all_entries, name_entries)
+        if kg_s_idx >= 0 and kg_s_idx < len(r):
+            r[kg_s_idx] = kg_short
+        if sg_s_idx >= 0 and sg_s_idx < len(r):
+            r[sg_s_idx] = sg_short
+        if rm_idx >= 0 and rm_idx < len(r):
+            parts = [p for p in (kg_remark, sg_remark) if p]
+            r[rm_idx] = "；".join(parts)
+        changed += 1
+
+    return jsonify({
+        "success": True,
+        "rows": rows,
+        "changed": changed,
+        "message": f"已按 000_项目信息表 刷新 {changed} 行项目简称",
+    })
+
+
 # ============================================================
 # 生成 000_项目信息表（04_工地项目统计 + 06_周工作安排 + 07_周工作计划）
 # ============================================================
@@ -1451,20 +1515,15 @@ def match_short():
         return jsonify({"success": True, "short": ""})
     try:
         # 1) 按工作安排简称精确匹配
-        exact_lookup, _ = build_project_mapping()
+        exact_lookup, _, name_entries = build_project_mapping()
         proj_norm = normalize(project)
         if proj_norm in exact_lookup:
             return jsonify({"success": True, "short": exact_lookup[proj_norm][1]})
         # 2) 按项目名称匹配（精确/包含）
-        if PROJECT_INFO_FILE.exists():
-            df = pd.read_excel(PROJECT_INFO_FILE)
-            for _, r in df.iterrows():
-                pname = str(r.get("项目名称", "")).strip()
-                pn = normalize(pname)
-                if pn and (pn == proj_norm or pn in proj_norm or proj_norm in pn):
-                    short = str(r.get("出勤统计简称", "")).strip()
-                    if short:
-                        return jsonify({"success": True, "short": short})
+        for _, short, pn in name_entries:
+            if pn and (pn == proj_norm or pn in proj_norm or proj_norm in pn):
+                if short:
+                    return jsonify({"success": True, "short": short})
     except Exception:
         pass
     return jsonify({"success": True, "short": ""})

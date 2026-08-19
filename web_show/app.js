@@ -1215,6 +1215,30 @@ function saveEditGrid(key) {
   }).finally(() => setMask(false));
 }
 
+/* 06 编辑表：按当前开工/收工项目名，重新匹配 000_项目信息表 刷新项目简称 */
+function refreshEditShorts() {
+  if (!editState) { toast("表格尚未加载", "error"); return; }
+  const rows = [];
+  document.querySelectorAll("#edit-grid-wrap tbody tr").forEach(tr => {
+    const vals = tr.querySelectorAll(".cell-val");
+    rows.push(Array.from(vals).map(v => v.textContent.trim()));
+  });
+  setMask(true, "正在刷新项目简称…");
+  api("/api/edit_refresh/table6", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ columns: editState.columns, rows }),
+  }).then(res => {
+    if (res.success) {
+      renderEditGrid({ ...editState, rows: res.rows });  // 重建网格，保留已编辑内容
+      toast(res.message || "已刷新项目简称", "success");
+    } else {
+      toast(res.message || "刷新失败", "error");
+    }
+  }).catch(e => toast("刷新请求失败: " + e, "error"))
+    .finally(() => setMask(false));
+}
+
 /* ---------- 查找 / 替换（05/06 编辑表） ---------- */
 let frCurrent = null;  // {cell, pos} 当前查找位置
 
@@ -1292,6 +1316,9 @@ function waitForEdit(key, errorKey, label, tableInfo, canBack) {
   return new Promise(resolve => {
     const modal = document.getElementById("modal-edit");
     document.getElementById("edit-title").textContent = `生成 ${label} · 人工核对与修改`;
+    // 刷新项目简称按钮仅表6需要（表6有开工/收工项目名 → 简称）
+    const refreshBar = document.getElementById("grid-toolbar-bottom");
+    if (refreshBar) refreshBar.hidden = key !== "table6";
 
     const info = tableInfo || {};
     const normal = info.normal != null ? info.normal : "—";
@@ -1595,6 +1622,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-rv-skip").addEventListener("click", skipReviewPhoto);
 
   document.getElementById("btn-grid-add").addEventListener("click", addGridRow);
+  document.getElementById("btn-grid-refresh").addEventListener("click", refreshEditShorts);
 
   document.getElementById("fr-next").addEventListener("click", frFindNext);
   document.getElementById("fr-replace-one").addEventListener("click", frReplaceOne);

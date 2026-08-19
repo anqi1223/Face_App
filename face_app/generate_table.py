@@ -1349,7 +1349,7 @@ def get_table6():
             abnormal_details.append(row_data)
 
     # 4. 生成 06_全体人员出工情况表（在 05_ 基础上补充项目简称）
-    exact_lookup, all_entries = build_project_mapping()
+    exact_lookup, all_entries, name_entries = build_project_mapping()
     print(f"加载002项目信息表: {len(exact_lookup)} 条记录")
 
     # 删除加班时长测算列
@@ -1380,13 +1380,13 @@ def get_table6():
     shougong_remarks = []
     for _, row in df6.iterrows():
         kg_short, _, kg_remark = match_project(
-            row.get("开工项目名", ""), "开工项目名", exact_lookup, all_entries
+            row.get("开工项目名", ""), "开工项目名", exact_lookup, all_entries, name_entries
         )
         kaigong_shorts.append(kg_short)
         kaigong_remarks.append(kg_remark)
 
         sg_short, _, sg_remark = match_project(
-            row.get("收工项目名", ""), "收工项目名", exact_lookup, all_entries
+            row.get("收工项目名", ""), "收工项目名", exact_lookup, all_entries, name_entries
         )
         shougong_shorts.append(sg_short)
         shougong_remarks.append(sg_remark)
@@ -1656,11 +1656,14 @@ def build_project_mapping():
     Returns:
         exact_lookup: {normalized工作安排简称: (原始工作安排简称, 出勤统计简称)}
         all_entries: [(原始工作安排简称, 出勤统计简称, 工作安排简称_norm, 提取关键词)]
+        name_entries: [(原始项目名称, 出勤统计简称, normalized项目名称)] —— 供按"项目名称"回退匹配
+                     （如"…石湖变等13座…"这类长项目名在工作安排简称里查不到，但其项目名称列有完整名）
     """
     df_002 = pd.read_excel(PROJECT_INFO_FILE)
 
     exact_lookup = {}
     all_entries = []
+    name_entries = []
 
     for _, row in df_002.iterrows():
         key = row.get("工作安排简称", "")
@@ -1673,17 +1676,25 @@ def build_project_mapping():
             exact_lookup[k_norm] = (k, v)
             all_entries.append((k, v, k_norm, extract_key(k_norm)))
 
-    return exact_lookup, all_entries
+        pname = row.get("项目名称", "")
+        if pd.notna(pname) and str(pname).strip():
+            p = str(pname).strip()
+            p_norm = normalize(p)
+            v = str(val).strip() if pd.notna(val) else ""
+            name_entries.append((p, v, p_norm))
+
+    return exact_lookup, all_entries, name_entries
 
 
-def match_project(proj_raw, column_label, exact_lookup, all_entries):
-    """将项目名精确匹配002项目信息表。
+def match_project(proj_raw, column_label, exact_lookup, all_entries, name_entries=None):
+    """将项目名匹配002项目信息表（工作安排简称精确匹配 → 项目名称回退匹配 → 最相似记录备注）。
 
     Args:
         proj_raw: 05_中的项目名（开工或收工）
         column_label: "开工项目名" 或 "收工项目名"，用于备注
-        exact_lookup: 精确匹配字典
-        all_entries: 所有002条目
+        exact_lookup: 工作安排简称精确匹配字典
+        all_entries: 所有002条目（工作安排简称）
+        name_entries: [(项目名称, 出勤统计简称, 项目名称_norm)]，供按项目名称回退匹配
 
     Returns:
         (简称str, 是否高亮bool, 备注str)
@@ -1694,7 +1705,7 @@ def match_project(proj_raw, column_label, exact_lookup, all_entries):
     proj_clean = str(proj_raw).strip()
     proj_norm = normalize(proj_clean)
 
-    # --- 精确匹配 ---
+    # --- 精确匹配（工作安排简称） ---
     if proj_norm in exact_lookup:
         original_key, short_stat = exact_lookup[proj_norm]
         if short_stat:
@@ -1705,6 +1716,15 @@ def match_project(proj_raw, column_label, exact_lookup, all_entries):
                 True,
                 f"{column_label}「{proj_clean}」在002项目信息表中出勤统计简称为空，需人工补充",
             )
+
+    # --- 按项目名称回退匹配（等变电站等长项目名在"工作安排简称"列查不到，但项目名称列有完整名） ---
+    for pname, short_stat, p_norm in (name_entries or []):
+        if not p_norm:
+            continue
+        if p_norm == proj_norm or p_norm in proj_norm or proj_norm in p_norm:
+            if short_stat:
+                return short_stat, False, ""
+            break
 
     # --- 无法精确匹配，尝试查找最相似记录生成备注 ---
     best_match = _find_closest(proj_norm, proj_clean, all_entries)

@@ -540,6 +540,11 @@ td.vs-hit { background: #FFF3B0; box-shadow: 0 0 0 2px var(--warn); }
 .btn.tiny.danger:hover { background: var(--danger); color: #fff; }
 
 .grid-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-shrink: 0; }
+.grid-toolbar-bottom {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border); flex-shrink: 0;
+}
 .grid-tip { font-size: 12px; color: var(--muted); }
 
 /* 核对弹窗左右两栏：左=错误文档，右=可编辑表格，各自独立滚动 */
